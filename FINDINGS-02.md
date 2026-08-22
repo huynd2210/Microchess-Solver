@@ -68,7 +68,8 @@ Every ply carries its own `roundtrip ok <cum>` and `injective ok <keys>
 <positions>` line (cumulative numbers); all six reference values —
 56,141 / 1,021,173 / 3,898,949 / 13,634,481 / 42,373,487 / 118,717,620 —
 match exactly. Timing: 22.6 s to ply 10, 249.8 s to ply 12, single-threaded,
-peak RSS roughly 6 GB (the ply-12 dedup set alone is 2^28 slots x 12 bytes).
+peak RSS estimated at ~6 GB (the ply-12 dedup set alone is 2^28 slots x 12
+bytes = 3.2 GB; keys + frontier add ~2 GB more).
 
 The BFS dedups by **full position bytes** (board nibbles + side + castling,
 11-byte records in a hand-rolled open-addressing set) — never by the codec
