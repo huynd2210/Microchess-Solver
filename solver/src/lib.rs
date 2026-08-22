@@ -11,7 +11,9 @@
 //! * castling is `a1c1` / `a5c5` only; rights are lost when the king moves,
 //!   the rook moves, or the rook's home square is captured on.
 
+pub mod codec;
 pub mod movegen;
+pub mod tt;
 
 pub const BOARD_LEN: usize = 20;
 
