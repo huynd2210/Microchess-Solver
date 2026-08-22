@@ -1,0 +1,23 @@
+=== driver started 2026-08-22T22:26:32+07:00 pid=11681 cap=400000000 tmo=1800s ===
+22:26:32 OK   KvK 2p 1 classes recorded in 0s
+22:26:33 OK   KPvK 3p 5 classes recorded in 1s
+22:26:34 OK   KvKP 3p 5 classes recorded in 1s
+22:27:55 OK   KPvKP 4p 25 classes recorded in 77s
+22:27:56 OK   KBBvK 4p 1 classes recorded in 1s
+22:27:57 OK   KNNvK 4p 1 classes recorded in 1s
+22:27:58 OK   KRRvK 4p 1 classes recorded in 1s
+22:27:59 OK   KvKBB 4p 1 classes recorded in 1s
+22:28:00 OK   KvKNN 4p 1 classes recorded in 1s
+22:28:01 OK   KvKRR 4p 1 classes recorded in 1s
+22:28:12 OK   KBPvK 4p 4 classes recorded in 10s
+22:28:22 OK   KNPvK 4p 3 classes recorded in 10s
+22:28:31 OK   KPRvK 4p 2 classes recorded in 9s
+22:28:42 OK   KvKBP 4p 4 classes recorded in 10s
+22:28:52 OK   KvKNP 4p 3 classes recorded in 10s
+22:29:01 OK   KvKPR 4p 2 classes recorded in 9s
+22:31:49 OK   KBBvKP 5p 5 classes recorded in 167s
+22:34:30 OK   KNNvKP 5p 5 classes recorded in 160s
+22:37:15 OK   KPvKBB 5p 5 classes recorded in 164s
+22:39:56 OK   KPvKNN 5p 5 classes recorded in 160s
+22:42:06 OK   KPvKRR 5p 5 classes recorded in 128s
+22:44:09 OK   KRRvKP 5p 5 classes recorded in 122s
