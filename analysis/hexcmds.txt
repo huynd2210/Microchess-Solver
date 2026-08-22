@@ -1,0 +1,8 @@
+uci
+isready
+setoption name VariantPath value C:\Woodchop\Code\Microchess\engine\hexapawn.ini
+setoption name UCI_Variant value hexapawn
+ucinewgame
+position startpos
+go depth 20
+quit

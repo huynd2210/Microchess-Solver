@@ -1,0 +1,5 @@
+setoption name VariantPath value C:\Woodchop\Code\Microchess\engine\microchess.ini
+setoption name UCI_Variant value microchess
+position startpos
+go movetime 5000
+quit

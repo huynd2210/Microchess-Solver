@@ -1,0 +1,4 @@
+Fairy-Stockfish 14 by Fabian Fichter
+info string variant microchess files 4 ranks 5 pocket 0 template fairy startpos kbnr/3p/4/3P/KBNR w Dd - 0 1
+info string classical evaluation enabled
+bestmove d2d3

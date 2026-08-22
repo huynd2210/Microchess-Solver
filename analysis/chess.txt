@@ -1,0 +1,4 @@
+uci
+position startpos
+go movetime 3000
+quit
