@@ -12,7 +12,9 @@
 //!   the rook moves, or the rook's home square is captured on.
 
 pub mod codec;
+pub mod matclass;
 pub mod movegen;
+pub mod retro;
 pub mod tt;
 
 pub const BOARD_LEN: usize = 20;
