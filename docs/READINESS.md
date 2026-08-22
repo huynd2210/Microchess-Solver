@@ -21,12 +21,26 @@ retrograde solver driven by Fairy-Stockfish (`analysis/oracle.py`), a C++ one
 `solver/src/retro.rs` allocates a dense array per material class. Class sizes are
 exact combinatorial counts, and they explode:
 
-| class | placements | slots (×8) | at 1 B/slot |
-|---|---:|---:|---:|
-| KBNRvK (measured) | 1,860,480 | 14,883,840 | 15 MB — 36 s, 595 MiB |
-| KBNRPvKBN | 3,047,466,240 | 24,379,729,920 | 24 GB |
-| KBNRPvKBNR | 36,569,594,880 | 292,556,759,040 | **293 GB** |
-| **KBNRPvKBNRP** (the start class) | 232,890,577,920 | 1,863,124,623,360 | **1.9 TB** |
+| class | slots as indexed (placements×8) | memory at the solver's 2.25 B/slot |
+|---|---:|---:|
+| KBNRvK (measured) | 14,883,840 | 36 s, 595 MiB |
+| KRPvKRP (measured, 6-piece) | 223,000,000 | 29 min, 2.1 GiB |
+| KBNRPvKBNR (9-piece) | 3,900,756,787,200 | ~8.8 TB |
+| **KBNRPvKBNRP** (the start class) | **5,363,540,582,400** | **~12 TB** |
+
+**Correction.** An earlier draft quoted 1.9 TB for the start class. That was the
+*pawn-restricted* placement count at 1 byte/slot — a theoretical floor, not what
+the code needs. `solver/src/retro.rs` indexes placements as 20P10 =
+670,442,572,800 (pawns are rejected on the promotion rank at the legality stage,
+but slots are still allocated for them) and stores 1 B of value + 1.25 B of packed
+board per slot. The real requirement is **12 TB**, matching the agent's own figure.
+Even the absolute floor — pawn-restricted placements at 2 bits/slot — is 0.47 TB.
+The conclusion is unchanged across every density; only the size of the gap moves.
+
+The solver does have a **streamed** mode (~4.9× slower, ~14× less memory), verified
+by the agent to give byte-identical counts. It does not help here: the saving is on
+the edge cache, which is only used below 16.7M slots anyway. The value array alone
+is 5.4 TB.
 
 The agent reached the same conclusion independently and said so plainly: 8-piece
 classes are the first infeasible ones (~91 GB by its accounting), the start class
@@ -55,7 +69,20 @@ the constraint.
 
 1. **Reachability-driven storage** for classes above ~7 pieces: the exact codec key
    in a compact hash set, instead of a dense per-class array. The codec and TT
-   already exist and were built for exactly this.
+   already exist and were built for exactly this. **With symmetry — it is not
+   optional.** A sparse entry must carry its key: 47-bit key + 2-bit value = 6.1 B,
+   ~8.8 B/position at a 70% load factor.
+
+   | total reachable | no symmetry | ×2 (colour) | ×4 (colour+mirror) |
+   |---|---:|---:|---:|
+   | 1.8e9 (low) | 15.8 GB | 7.9 GB | 3.9 GB |
+   | 3.9e9 (central) | **34.1 GB** | 17.1 GB | 8.5 GB |
+   | 1.48e10 (high) | 129.5 GB | 64.8 GB | **32.4 GB** |
+
+   Without symmetry the *central* estimate already exceeds this 32 GB box, and the
+   high estimate does not fit even with it. And ×4 is optimistic: colour-swap +
+   vertical flip always applies (×2), but the left-right mirror only applies once
+   castling rights are gone, because the rook sits on the d-file.
 2. **Drop the 4× castling inflation.** Slots are `placements × 2 × 4`, but three of
    the four castling-rights states are impossible for most positions (the solver
    currently enumerates e.g. `4/3K/4/k2R/4 b d` — Black rights with no black rook
@@ -64,8 +91,13 @@ the constraint.
    design: monotone updates mean lock-free in-place sweeps converge to the same
    fixed point, confirmed bit-identical at 12 threads with iteration counts varying
    (21/20/19/19) while results do not.
-4. **Measure the top class's true reachable count.** It is the last load-bearing
-   assumption; everything above rests on the ~172× reduction being real.
+4. **Measure the total reachable count.** This is the load-bearing assumption and
+   it is *not* measured. The BFS is confirmed only to ply 12 (118,717,620); an
+   attempt to reach ply 13 was abandoned twice because it exhausts RAM on this
+   box. Everything above rests on projecting the growth-ratio decline
+   (4.66 → 2.66, mean −0.330/ply) past the last data point. If the decline
+   flattens, the total rises steeply and the storage plan fails before the
+   compute plan does.
 5. **Free disk space.** 4 GB free of 953 GB leaves no room for checkpoints, and a
    crash mid-run would cost the whole computation.
 

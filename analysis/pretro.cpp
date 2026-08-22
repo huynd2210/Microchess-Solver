@@ -238,6 +238,15 @@ struct HashSet {
 // Values are from the SIDE TO MOVE's point of view.
 // =====================================================================
 static int NTHREADS = 1;
+// The value array is written concurrently. Plain uint8_t access would be a data
+// race (UB) even though the update is monotone; relaxed atomics make it defined
+// and compile to the same mov on x86.
+static inline uint8_t vload(const vector<uint8_t>& v, size_t i){
+    return __atomic_load_n(&v[i], __ATOMIC_RELAXED);
+}
+static inline void vstore(vector<uint8_t>& v, size_t i, uint8_t x){
+    __atomic_store_n(&v[i], x, __ATOMIC_RELAXED);
+}
 template <class F> static void run_parallel(int nt, size_t n, F f){
     if(nt <= 1){ f(0, n); return; }
     vector<thread> ts; size_t chunk = (n + nt - 1) / nt;
@@ -372,7 +381,7 @@ int main(int argc, char** argv){
                 auto sweep = [&](size_t lo, size_t hi) -> void {
                   bool loc=false;
                   for(size_t id=lo; id<hi; id++){
-                    if(C.val[id] != V_UNKNOWN) continue;
+                    if(vload(C.val, id) != V_UNKNOWN) continue;
                     Pos P; decodeIdx(C, id, P);
                     bool anyLoss=false, allWin=true;
                     for(const Move& m : legalMoves(P)){
@@ -387,16 +396,16 @@ int main(int argc, char** argv){
                             auto it = done.find(key);
                             if(it == done.end()){ fprintf(stderr, "MISSING SUBCLASS\n"); abort(); }
                             size_t qid = encodeIdx(it->second, Q);
-                            v = (qid==SIZE_MAX) ? V_DRAW : it->second.val[qid];
+                            v = (qid==SIZE_MAX) ? V_DRAW : vload(it->second.val, qid);
                         } else {
                             size_t qid = encodeIdx(C, Q);
-                            v = (qid==SIZE_MAX) ? V_DRAW : C.val[qid];
+                            v = (qid==SIZE_MAX) ? V_DRAW : vload(C.val, qid);
                         }
                         if(v==V_LOSS) anyLoss=true;
                         if(v!=V_WIN) allWin=false;
                     }
-                    if(anyLoss){ C.val[id]=V_WIN; loc=true; }
-                    else if(allWin){ C.val[id]=V_LOSS; loc=true; }
+                    if(anyLoss){ vstore(C.val, id, V_WIN); loc=true; }
+                    else if(allWin){ vstore(C.val, id, V_LOSS); loc=true; }
                   }
                   if(loc) changed_a.store(true, memory_order_relaxed);
                 };
