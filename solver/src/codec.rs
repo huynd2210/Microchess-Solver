@@ -146,7 +146,7 @@ const SUB_R: usize = 4;
 /// what a class *means*, so identical same-colour pieces produced by promotion
 /// (e.g. two rooks = rook in the subset + promoted rook) fall out as ordinary
 /// multiset counts and are ranked identically wherever they sit.
-fn side_expansion(side_idx: usize) -> [u64; 5] {
+pub fn side_expansion(side_idx: usize) -> [u64; 5] {
     let subset = side_idx / 6;
     let slot = side_idx % 6;
     let mut c = [0u64; 5];
@@ -180,7 +180,7 @@ fn side_expansion(side_idx: usize) -> [u64; 5] {
 /// at most one type can be doubled and a pawn excludes every promotion
 /// product. Anything violating that is rejected with `Err` — it is outside
 /// the class alphabet and encoding it would not be injective.
-fn canon_side(p: u64, n: u64, b: u64, r: u64, q: u64) -> Result<usize, String> {
+pub fn canon_side(p: u64, n: u64, b: u64, r: u64, q: u64) -> Result<usize, String> {
     if p > 1 || q > 1 || b > 2 || n > 2 || r > 2 {
         return Err(format!(
             "material not representable in the class alphabet: P={p} N={n} B={b} R={r} Q={q}"
@@ -303,6 +303,36 @@ fn tables() -> &'static Tables {
 /// bit-budget discussion in FINDINGS-02.
 pub fn key_space() -> u64 {
     tables().total_space
+}
+
+// Public accessors over the class algebra, used by `matclass` (the class DAG)
+// and `retro` (per-class value arrays). No new state — same `Tables`.
+
+/// First key (placement-rank origin) of `class`; class `c` occupies
+/// placement ranks `[class_base(c), class_base(c) + class_placements(c))`.
+pub fn class_base(class: usize) -> u64 {
+    tables().bases[class]
+}
+
+/// Number of distinct square placements of the class's material
+/// (`20! / ((20-k)! * prod c_t!)` for its 13-type count vector).
+pub fn class_placements(class: usize) -> u64 {
+    let t = tables();
+    t.bases[class + 1] - t.bases[class]
+}
+
+/// The two sides' non-king piece counts `[P, N, B, R, Q]` of `class`.
+pub fn class_side_material(class: usize) -> ([u64; 5], [u64; 5]) {
+    (side_expansion(class / 48), side_expansion(class % 48))
+}
+
+/// The material class a full codec key belongs to. Undefined for keys in
+/// alias-class ranges (which [`try_decode`] rejects and [`encode`] never
+/// emits); legal-play successors are always canonical.
+pub fn class_of_key(key: u64) -> usize {
+    let t = tables();
+    let q = key >> 3;
+    t.bases[..NUM_CLASSES].partition_point(|&b| b <= q) - 1
 }
 
 // ---------------------------------------------------------------------------
