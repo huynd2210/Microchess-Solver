@@ -36,10 +36,12 @@ one strongly connected blob.
 **In microchess a captured piece is gone forever.** Material is monotonically
 non-increasing, so:
 
-* Positions partition into **material classes** — per side: any subset of {B,N,R}
-  (8) × a pawn slot in {none, P, Q, R, B, N} (6) = 48 configurations, so 48×48 =
-  **2304 classes**. Captures and promotions move strictly *down* this DAG; they
-  never move up.
+* Positions partition into **material classes** — per side, subsets of {B,N,R}
+  crossed with a pawn slot in {none, P, Q, R, B, N} give 48 labels but only
+  **36 distinct multisets** (12 alias: a promoted bishop with the original
+  captured is the same material as the original bishop). So **1,296 classes**, of
+  which 24 are unreachable, leaving **1,272**. Captures and promotions move
+  strictly *down* this DAG; they never move up. See `docs/ENCODING.md`.
 * The class DAG is **acyclic**. Cycles — hence repetition draws — exist only
   *within* a single class, among the non-capture, non-promotion moves.
 * Therefore the game can be solved **bottom-up**, endgame-tablebase style: solve
