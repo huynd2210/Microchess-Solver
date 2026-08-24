@@ -72,3 +72,60 @@ This machine has 32 GB installed and **3–7 GB actually available**.
 **Time was never the problem — 4 to 12 hours is fine. Storage is, and it now looks
 out of reach here**: the floor needs 21 GB even with the full ×4 symmetry reduction,
 and the likely case needs 44 GB.
+
+---
+
+# Key compression — measured
+
+The external-memory design hinges on bytes-per-key, so it was measured on the real
+732,059,560-key set rather than assumed (`analysis/keycompress.cpp`, log in
+`keycompress-measurement.txt`). The bitmap from the BFS *is* a sorted set, so
+walking it in order gives the exact gap distribution.
+
+```
+keys                : 732,059,560
+mean gap            : 14.74
+varint delta B/key  : 1.004   ->  0.74 GB
+bitmap       B/key  : 1.843   ->  1.35 GB
+raw 6-byte   B/key  : 6.000   ->  4.39 GB
+
+gap histogram by varint size:
+  1 byte:  728,869,437  (99.56%)
+  2 byte:    3,187,878  ( 0.44%)
+  3 byte:        1,999  ( 0.00%)
+  4 byte:          246  ( 0.00%)
+```
+
+**99.56% of gaps fit in a single varint byte.** A geometric-gap model predicted
+1.000 B/key against a measured 1.004 — **0.4% error**, so the model can be trusted
+to extrapolate to densities that cannot be measured directly.
+
+## What that means for the whole game
+
+| design | B/key | 9.4e9 (floor) | 2e10 (likely) | 3e10 |
+|---|---:|---:|---:|---:|
+| **per-class constrained index** | 1.35 | **13 GB** | **22 GB** | 31 GB |
+| raw codec key (naive index) | 2.25 | 21 GB | 41 GB | 59 GB |
+| raw 6-byte keys, uncompressed | 6.00 | 56 GB | 120 GB | 180 GB |
+| hash table, 8.8 B/entry *(the earlier plan)* | 8.80 | 83 GB | 176 GB | 264 GB |
+
+**Compression is worth 4–6.5× over the hash-table plan** — the difference between
+83 GB and 13 GB at the floor. It is the single change that brings the run back
+inside this machine.
+
+Against **~31 GB free disk**:
+
+* at the 9.4e9 floor, the visited set is 13–21 GB — **fits**;
+* at 2e10 it is 22–41 GB — fits only with constrained per-class indexing, and only
+  just;
+* at 3e10 it does not fit.
+
+Two caveats that eat the headroom:
+
+1. **Sort/merge needs scratch.** External BFS writes runs before merging them, and
+   a retrograde pass rewrites the set rather than updating in place, so peak usage
+   is roughly 2× the set size transiently. 13 GB set → ~26 GB peak, which is at the
+   edge of 31 GB free.
+2. **Delta encoding is sequential-access only.** That suits sort/merge exactly, but
+   it forecloses random probing — the design cannot fall back on a hash for
+   convenience anywhere in the hot path.

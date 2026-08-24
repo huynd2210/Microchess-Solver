@@ -1,0 +1,17 @@
+bitmap saved: topclass.bits (1.35 GB)
+
+=== key compression, measured on the real key set ===
+  keys                : 732059560
+  mean gap            : 14.74
+  varint delta B/key  : 1.004   -> 0.74 GB
+  bitmap       B/key  : 1.843   -> 1.35 GB
+  raw 6-byte   B/key  : 6.000   -> 4.39 GB
+  gap histogram by varint size:
+    1 byte:      728869437  (99.56%)
+    2 byte:        3187878  ( 0.44%)
+    3 byte:           1999  ( 0.00%)
+    4 byte:            246  ( 0.00%)
+
+EXACT reachable positions in the largest class: 732059560
+  of 10793502720 index slots           -> 6.7824% dense
+  of 670,442,572,800 x 8 naive  -> 0.01365% dense
