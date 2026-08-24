@@ -1,65 +1,48 @@
-# Microchess engine setup
+# Microchess
 
-Stockfish itself can't play custom variants; this setup uses
-**Fairy-Stockfish 14** (a Stockfish derivative with a variant framework),
-configured with a `microchess` variant definition.
+A 4x5 chess variant, and an attempt to solve it — to compute the game-theoretic
+value of the start position.
 
-## The game
+**Start here: [docs/FINDINGS.md](docs/FINDINGS.md)** — the current state of
+knowledge, what is verified, what is ruled out, and what it would cost.
 
-4x5 board, white at bottom, **uppercase = White** (standard FEN convention):
+## Short version
 
-```
-  a b c d
-5 k b n r    black
-4 . . . p
-3 . . . .
-2 P . . .
-1 K B N R    white
-```
+Rules, exact position encoding, and a verified parallel retrograde fixed point all
+exist and are cross-checked against independent implementations. Two solving routes
+are ruled out by measurement: forward proof search diverges on a drawn root, and a
+dense bottom-up tablebase cannot reach the 10-piece start position.
 
-- Start FEN: `kbnr/3p/4/3P/KBNR w - - 0 1`
-- Castling allowed: king `a1`/`a5` with rook `d1`/`d5`. King goes to the
-  c-file (`a1c1`, rook ends on `b1`). Legal once b/c squares of the back rank
-  are empty and not attacked.
-- No pawn double step → no en passant.
-- Pawn promotes on the last rank (q/r/b/n).
+The surviving route stores only reachable positions. Reachability is a **7,327x**
+reduction — measured exactly on the largest class, which holds **732,059,560**
+positions. Extrapolating that measured curve puts the whole game at **at least
+9.4e9** positions: 4–12 hours of compute, but 21–44 GB of resident state, which
+does not fit this machine. Hence external memory.
 
-Note: Fairy-Stockfish also ships a *built-in* variant called `micro`, but that
-is a different game (it has lance pieces). Do not use it — use our
-custom-defined `microchess`.
+## Layout
 
-## Files
-
-| File | Purpose |
+| path | what |
 |---|---|
-| `engine/fairy-stockfish.exe` | Fairy-Stockfish 14 binary |
-| `engine/microchess.ini` | The microchess variant definition |
-| `engine/variants-official.ini` | Official reference config (documentation) |
-| `microchess.py` | CLI driver around the UCI engine |
+| `docs/FINDINGS.md` | **the summary** — read this first |
+| `docs/SPEC.md` | the exact rules, each verified against the engine |
+| `docs/PERFT.md`, `docs/perft.txt` | the rules acceptance test (depth 9 = 176,466,898) |
+| `docs/ENCODING.md` | the exact injective u64 key and why a hash will not do |
+| `docs/REPETITION.md` | draws, repetition, and the graph-history-interaction trap |
+| `docs/REACHABLE.md` | the exact reachable-set measurement |
+| `docs/DFPN.md`, `docs/PRUNING.md` | why forward search and pruning do not get there |
+| `docs/ARCHITECTURE.md` | design reasoning, and the Tinyhouse prior art |
+| `docs/GROUND-TRUTH.md` | independently derived values for cross-checking |
+| `solver/` | Rust: rules, codec, transposition table, material classes |
+| `analysis/` | measurement tools: oracle, df-pn, witness, overlap, top-class BFS |
+| `engine/` | Fairy-Stockfish plus the corrected `microchess.ini` |
 
-## Quick usage
+## Quick use
 
-```powershell
-python microchess.py show                 # pretty-print start position
-python microchess.py moves                # legal moves at start
-python microchess.py best --depth 14      # best move + cp score
-python microchess.py best "kbnr/3p/4/3P/KBNR b - - 0 1" --movetime 500
-python microchess.py perft 3
+```bash
+cargo run --release --manifest-path solver/Cargo.toml --bin perft -- 9   # 176466898
+cargo run --release --manifest-path solver/Cargo.toml --bin codeck -- 12 # codec check
+cargo test --release --manifest-path solver/Cargo.toml                   # 46 tests
+python microchess.py best "k3/4/4/3P/KBNR w - - 0 1" --movetime 3000     # mate 5
 ```
 
-Moves use UCI coordinate notation (`d2d3`); castling is `a1c1` / `a5c5`.
-
-## Talking to the engine directly (for integration)
-
-The two-step load is required — defining the variant is separate from
-selecting it:
-
-```
-setoption name VariantPath value <abs path>/engine/microchess.ini
-setoption name UCI_Variant value microchess
-position fen kbnr/3p/4/3P/KBNR w - - 0 1
-go depth 14        # or go movetime 1000 / go wtime .. btime ..
-```
-
-Engine replies stream `info depth ... score cp ... pv ...` lines followed by
-`bestmove <move>`.
+`git checkout bottom-up-tablebase -- <path>` recovers the removed dense tablebase.

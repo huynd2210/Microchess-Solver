@@ -1,5 +1,10 @@
 # Readiness for the full solve — NOT READY
 
+> **SUPERSEDED — see `FINDINGS.md`.** Written while the bottom-up dense tablebase
+> was still the plan; that approach has been removed (recoverable via the
+> `bottom-up-tablebase` tag) because it cannot reach the 10-piece start position.
+> The verified-component table and the measured numbers below remain valid.
+
 Compute is solved. Correctness is solved. **Storage layout is not**, and it is out
 by roughly three orders of magnitude. Do not start the run.
 

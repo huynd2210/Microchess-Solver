@@ -1,5 +1,12 @@
 # Checkpointing and disk offload
 
+> The reference implementation this describes (`analysis/ckpt.cpp`) was removed
+> with the bottom-up tablebase; recover it with
+> `git checkout bottom-up-tablebase -- analysis/ckpt.cpp`. The **design and its
+> verification still stand** and carry over directly to the external-memory
+> solver — monotonicity is what makes checkpointing nearly free, and that does not
+> depend on where the values live.
+
 `analysis/ckpt.cpp` — the parallel retrograde solver with a memory-mapped,
 resumable store. Verified working; this is the reference design for the Rust port.
 

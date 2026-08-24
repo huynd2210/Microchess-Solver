@@ -1,5 +1,11 @@
 # Feasibility: can microchess be solved in one week on this machine?
 
+> **SUPERSEDED — see `FINDINGS.md`.** The verdict below ("a one-week solve fits,
+> with margin") rested on an extrapolated reachable total of 3.9e9. That total has
+> since been re-anchored on an exact measurement to **at least 9.4e9**, and the
+> storage requirement now exceeds this machine. The per-class timings and the
+> ground-truth table below remain valid.
+
 **Yes, with margin.** Central estimate ~11 hours single-threaded; the pessimistic
 corner still fits inside a week. The binding constraint is storage, not compute,
 and storage fits in RAM.
