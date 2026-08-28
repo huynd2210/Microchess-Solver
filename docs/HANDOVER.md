@@ -11,39 +11,37 @@ situation: what is running, what is built, and what to do next.
 
 **Where we are.** Everything needed to *support* a solve is built and verified.
 The solver itself is not. The enumeration phase — the first half, and the phase
-that settles the last unmeasured quantity — is built, validated, and **paused at a
-clean checkpoint**.
+that settles the last unmeasured quantity — is built, validated, and **running**.
 
-**The run.** `enumerate.exe` reached **ply 14: 674,345,821 positions** and was
-stopped deliberately, not by failure. Checkpoint is intact and resumable.
+**The run.** Resumed from the ply-14 checkpoint with varint-compressed storage
+and parallel expansion.
 
 ```
-store : <scratch>/enum_run          7.9 GB, checkpoint at ply 14
-log   : <scratch>/enum_run.log
+store : <scratch>/enum_run          1.3 GB at ply 14 (was 8.4 GB raw)
+log   : <scratch>/enum_run.log      appended across runs, never truncated
+pid   : <scratch>/enum_run.pid      kill by this, never `pkill -f`
 resume: solver/target/release/enumerate.exe <store_dir> 64
+tune  : ENUM_THREADS (default = logical/2), ENUM_BUF_MK (default 256)
 ```
 
-Partial-ply scratch (`run_*.keys`) has been cleared, so the checkpoint is clean.
-Resuming re-runs ply 15 from scratch, which is correct — stale run files would also
-have been correct (sort+dedupe+merge-against-visited absorbs them) but clearing
-removes the question.
+Resuming is always safe: the store is a checkpoint after every ply and is
+crash-safe *within* a ply too (see **Restartability** below). Nothing needs to be
+cleaned by hand before a restart.
 
-### What the run has already bought
-
-Two plies nobody had measured before:
+### Plies measured so far
 
 | ply | new | cumulative | ratio |
 |---:|---:|---:|---:|
 | 12 | 76,344,133 | 118,717,620 | 2.656 |
-| **13** | **177,411,843** | **296,129,463** | **2.324** |
-| **14** | **378,216,358** | **674,345,821** | **2.132** |
+| 13 | 177,411,843 | 296,129,463 | 2.324 |
+| 14 | 378,216,358 | 674,345,821 | 2.132 |
 
 The global curve decays **more slowly than the no-capture region** at every
-comparable ply (r13 2.32 vs 1.98, r14 2.13 vs 1.89). That was the prediction behind
-calling 9.4e9 a *floor* rather than an estimate, and it is now confirmed by
+comparable ply (r13 2.32 vs 1.98, r14 2.13 vs 1.89). That was the prediction
+behind calling 9.4e9 a *floor* rather than an estimate, and it is confirmed by
 measurement.
 
-Re-projecting from plies 11–14:
+Projection from plies 11–14 — still the live uncertainty:
 
 | decline assumption | peak | total reachable |
 |---|---:|---:|
@@ -51,92 +49,118 @@ Re-projecting from plies 11–14:
 | **measured** | **ply 19** | **8.4e9** |
 | slower (+40%) | ply 22 | 3.4e10 |
 
-The spread is still 7×. Only finishing the enumeration closes it.
+Only finishing the enumeration closes the 7× spread.
 
 ---
 
-## Why the run stopped where it did
+## What changed since the ply-14 pause
 
-Not a crash — a known ceiling. `visited` stores keys **raw at 8 bytes**. With
-~19 GB free disk that caps out near 2.5–3e9 keys, around ply 16–17. Stopping at
-ply 14 was a choice; the wall was a few plies away.
+Two blockers were removed. Both are done, tested, and committed.
 
-**This is the next thing to fix, and the fix is already measured.**
+### 1. Key compression — the disk ceiling is gone
+
+`visited` stored keys raw at 8 B, which capped the store near ply 16. Keys now go
+to disk as **LEB128 delta-gaps** (`solver/src/keystream.rs`), and every pass —
+read, k-way merge, union write — is streaming, so no bucket is ever materialised
+and RAM does not track bucket size.
+
+**Measured on the real ply-14 set: 1.283 B/key, 6.23× smaller.** The store went
+8.42 GB → 1.3 GB; free disk went 15 GB → 22 GB. This beats the 2.25 B/key that
+was projected from a uniform-gap model, because reachable keys cluster hard
+inside a material class — exactly what a gap encoding is paid to exploit. Density
+rises as the set fills, so B/key should keep falling toward ~1.0.
+
+`recompress` converts a raw store in place. It reads each encoded bucket back and
+compares key-for-key **before** replacing the raw file, and records per-bucket
+progress so an interrupted conversion resumes.
+
+### 2. Parallel expansion — ~5× on the part that costs
+
+Expansion is the whole cost of a ply. Threads claim whole frontier buckets from
+one atomic cursor; run files carry the writing thread's id. Consolidation stays
+serial (~10% of a ply), merging every run file for a bucket regardless of writer,
+which keeps the count exact by construction.
+
+**Measured at ply 12: 76.6 s wall against 299 s serial; expansion 39.0 s against
+194 s.** Scaling is flat past the physical core count — expand took 37.6 s on 10
+threads, 37.8 on 14, 39.0 on 20 — because the loop is bound by memory traffic
+through the codec tables, not ALU work, so SMT buys nothing. Default is half of
+`available_parallelism`.
+
+That the threading is invisible in the result is **asserted, not argued**:
+`tests/parallel_identity.rs` runs a 1-thread and an 8-thread store to ply 10 and
+requires them byte-identical file for file, plus thread counts 1/2/3/5/16 all
+agreeing, plus both matching the ply ladder — identity alone would be satisfied
+by two runs wrong in the same way. It squeezes the buffer to 1 Mkey so threads
+spill repeatedly into the same buckets, which is where a naming collision or a
+dropped run would surface.
+
+### 3. Restartability — a ply is now crash-safe partway through
+
+Previously consolidation overwrote frontier buckets while updating `visited` in
+place. An interrupted ply left a store that could neither resume (visited was
+partly advanced) nor re-expand (the frontier it needed was gone). With free disk
+close to the projected peak, that was a likely event, not a hypothetical.
+
+Now a ply commits in a fixed order — `consol.txt` (per-bucket progress) →
+`swap.txt` (frontier swap barrier) → `ply.txt` — and every step is idempotent on
+replay. The next frontier is written beside the current one and swapped only once
+all buckets are done; `visited` is rewritten to a sibling and renamed over, never
+truncated in place. Run files are discovered from the directory, so a resumed
+consolidation sees exactly what expansion left behind.
 
 ---
 
-## Next step: key compression
-
-Measured, not assumed (`analysis/keycompress.cpp`, on the real 732 M-key set):
-
-```
-mean gap            : 14.74
-varint delta B/key  : 1.004     <- 99.56% of gaps fit in ONE byte
-bitmap       B/key  : 1.843
-raw 6-byte   B/key  : 6.000
-```
-
-A geometric-gap model predicted 1.000 against a measured 1.004 — **0.4% error** — so
-it can be trusted to extrapolate to the global key density, where it gives
-**2.25 B/key**.
-
-| visited format | B/key | 8.4e9 keys | fits ~19 GB free? |
-|---|---:|---:|---|
-| raw u64 *(what is running now)* | 8.00 | 67 GB | no — stalls at ~ply 16 |
-| **delta + varint** | **2.25** | **19 GB** | **just barely** |
-| delta + varint, ×2 colour symmetry | 2.25 | 9 GB | comfortably |
-
-### What to change
-
-`solver/src/bin/enumerate.rs`, three functions, nothing else:
-
-* `write_keys` — emit varint deltas instead of `u64::to_le_bytes`. Keys are already
-  sorted at every call site.
-* `read_keys` — decode the deltas back. Prefer a streaming iterator to a `Vec`, so
-  a bucket never has to be fully resident.
-* `merge_new` — already a linear two-pointer merge; make it consume two iterators
-  and emit varints, so no bucket is ever materialised.
-
-Everything else (bucketing, spill, checkpointing, resume) is unchanged and already
-validated. **Re-validate against the ply table below after the change** — the
-counts must be identical.
-
-### After compression, in order
+## Next, in order
 
 1. **Finish the enumeration.** Closes the 4.5e9–3.4e10 spread to a single number.
-   This is the last unmeasured input to every cost estimate in the project.
+   The last unmeasured input to every cost estimate in the project.
 2. **Colour symmetry (×2).** Always valid (colour swap + vertical flip). Halves
-   both storage and work. The left–right mirror is only valid once castling rights
-   are gone — do not assume ×4.
-3. **Then the retrograde solve.** Design notes in `FINDINGS.md` §4. The one
-   decision that matters: a **queue/counter** retrograde is O(edges) once (~1.7 h
-   of compute at 12 threads); naive sweeps multiply by the sweep count (10–15 h).
+   both storage and work. The left–right mirror is only valid once castling
+   rights are gone — do not assume ×4.
+3. **A cheaper key — now the highest-value optimisation by a wide margin.** See
+   the corrected cost below.
+4. **Then the retrograde solve.** Design notes in `FINDINGS.md` §4. The decision
+   that matters: a **queue/counter** retrograde is O(edges) once; naive sweeps
+   multiply by the sweep count.
 
 ---
 
-## Cost, as currently understood
+## Cost — corrected, and worse than previously recorded
 
-Measured inputs: 81.1 ns/child movegen+make, 154.7 ns/child for the exact codec
-key, 74.7 M keys/s radix sort per thread, 101 MB/s sequential on *this* drive
-(97% full, budget DRAM-less — not representative).
+**`codec::encode` costs ~520 ns/child, not the 154.7 ns this document used to
+claim.** The old figure is real but only holds below roughly 3 M resident
+positions. `prodrate` reproduces 154.7 ns exactly at depth 6 and holds to depth 7,
+then falls off a cache cliff:
 
-| | |
-|---|---|
-| compute, queue/counter retrograde, 12 threads | **~1.7 h** |
-| compute, naive sweeps | 10–15 h |
-| total I/O traffic | 4–6 TB |
-| wall clock on decent NVMe (≥2 GB/s) | **2–4 h**, CPU-bound |
-| wall clock on this drive | ~14 h, I/O-bound |
-| peak resident data | 50–90 GB |
+```
+depth 5   81.7 ns movegen+make   156.8 ns codec key
+depth 6   88.1                   154.7          <- where the old figure came from
+depth 7   80.1                   158.1
+depth 8   82.2                   521.4          <- real working-set behaviour
+```
 
-**Two thirds of the compute is the codec key** (155 ns against 81 ns for the move
-itself). A cheaper key — incremental update, or a per-class constrained rank like
-the one built for the top class in `analysis/topclass.cpp` — nearly halves total
-compute. That is the highest-value optimisation available, and it is untouched.
+It is not the build (A/B'd with and without LTO) and not the spill buffer size
+(A/B'd 32 vs 192 Mkeys — no effect). `movegen + make` is unchanged at ~81 ns, so
+the regression is entirely the codec's table lookups being evicted.
+
+Consequences:
+
+* **Compute, not disk, is now the binding constraint.** Compression turned a hard
+  disk ceiling into ~1.3 GB at ply 14; nothing suggests disk will bind again.
+* The enumeration is roughly **5–37 h of wall clock** across the projection
+  spread (~2 h at the 8.4e9 central estimate with expansion parallelised), rather
+  than the 2–4 h this document used to imply.
+* **A cheaper key is worth more than anything else on the list.** It is ~85% of
+  expansion cost. Incremental key update, or a per-class constrained rank like
+  the one in `analysis/topclass.cpp`, is the obvious attack. Untouched.
+
+Other measured inputs, unchanged: 74.7 M keys/s radix sort per thread, 101 MB/s
+sequential on *this* drive (98% full, budget DRAM-less — not representative).
 
 Capacity and traffic are different things: a few hundred GB of drive is ample for
-the 50–90 GB resident; the 4–6 TB is throughput *through* that space over the run,
-and is what sets wall clock.
+the resident set; the multi-TB figure is throughput *through* that space over the
+run.
 
 ---
 
@@ -147,6 +171,7 @@ Any change to rules, codec or enumeration must reproduce all of these.
 ```
 perft 9                     = 176,466,898
 codec injective over          118,717,620 positions, max key 2^46.69
+visited encoding              1.283 B/key on the ply-14 set (674,345,821 keys)
 ```
 
 Reachable positions per ply, cumulative:
@@ -159,6 +184,14 @@ Reachable positions per ply, cumulative:
  5: 11,872       10: 13,634,481
 ```
 
+`cargo test --release` covers all of it — 53 tests. The ones that matter most
+here: `perft_ladder`, `codec` injectivity, `keystream` (LEB128 byte-count
+boundaries, streams spanning many I/O buffers, k-way dedup), and
+`parallel_identity` (serial/parallel byte-identity + the ladder).
+
+A from-scratch re-run of the enumerator reproduced the ladder exactly through ply
+12 after the compression change, and again after parallelisation.
+
 Independent ground truth for solved values is in `GROUND-TRUTH.md` (five material
 classes, cross-checked three ways). The largest class is exactly enumerated at
 **732,059,560** positions.
@@ -169,17 +202,23 @@ classes, cross-checked three ways). The largest class is exactly enumerated at
 
 * **`pkill -f` silently fails here.** It once left *twelve* driver processes
   appending to one results file. Kill by PID via WMI, and use a lock file.
+* **Heredocs into this shell mangle multi-line content.** A `cat > file <<'EOF'`
+  of a Rust file died on an apostrophe in a comment; earlier, Python patch
+  scripts got their `\n` unescaped and two 30-minute runs executed unpatched
+  binaries. Write source files with the editor tool, and **verify the change
+  landed** before starting anything long.
 * **Bash `$10` is `${1}0`.** Use `${10}`, or parse key/value pairs with awk.
-* **Python patch scripts get their `\n` unescaped** in this shell. Two 30-minute
-  runs executed unpatched binaries because a heredoc edit silently did not apply.
-  **Verify the change landed in the binary** (`strings foo.exe | grep ...`) before
-  starting anything long.
-* **Do not test position legality** by asking whether the side to move can capture
-  the enemy king. Fairy-Stockfish never generates king captures, so adjacent-king
-  positions pass and a *mated* side passes vacuously. Flip the side to move and
-  read `Checkers:`.
+* **`bc` is not installed.** Do arithmetic in awk, or in the program.
+* **Benchmark numbers are only valid at the working set they were taken at.**
+  The 154.7 ns codec figure was right and still misled the whole cost model for
+  weeks because nobody recorded that it was a depth-6 measurement. Record the
+  scale beside the number.
+* **Do not test position legality** by asking whether the side to move can
+  capture the enemy king. Fairy-Stockfish never generates king captures, so
+  adjacent-king positions pass and a *mated* side passes vacuously. Flip the side
+  to move and read `Checkers:`.
 * **A hash is not an identity.** Anything holding settled values needs the exact
-  codec key; 64-bit Zobrist gives ~2.7 expected collisions at 1e10 positions, and a
-  collision in a solver is a silently wrong answer.
+  codec key; 64-bit Zobrist gives ~2.7 expected collisions at 1e10 positions, and
+  a collision in a solver is a silently wrong answer.
 * **`git checkout bottom-up-tablebase -- <path>`** recovers the removed dense
   tablebase if any of it is wanted back.
