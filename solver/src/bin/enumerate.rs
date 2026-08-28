@@ -8,25 +8,45 @@
 //!
 //! Keys are partitioned into `BUCKETS` by their high bits. Per ply:
 //!   1. **Expand** — read each frontier bucket, decode keys to positions,
-//!      generate children, encode, append to a per-bucket RAM buffer. When the
-//!      total buffered exceeds `BUF_KEYS`, sort + dedupe + spill each bucket to
-//!      a run file. Deduping before spilling is what keeps the intermediate
-//!      volume bounded: at saturation a position is reached ~8.9 ways.
-//!   2. **Consolidate** — per bucket, k-way merge its run files, dedupe, then
-//!      stream against that bucket's `visited` file. Keys not already present
-//!      become the next frontier and are merged into `visited`.
+//!      generate children, encode, append to a per-bucket RAM buffer. When a
+//!      thread's buffered total exceeds its share of `ENUM_BUF_MK`, it sorts,
+//!      dedupes and spills each bucket to a run file. Deduping before spilling
+//!      is what keeps the intermediate volume bounded: at saturation a position
+//!      is reached ~8.9 ways.
+//!   2. **Consolidate** — per bucket, k-way merge every run file any thread
+//!      wrote for it, dedupe, then stream against that bucket's `visited` file.
+//!      Keys not already present become the next frontier and are merged into
+//!      `visited`.
 //!
 //! Only one bucket is rewritten at a time, so peak disk is
 //! `visited + one bucket`, not `2 x visited`.
+//!
+//! # Why expansion parallelises without changing the answer
+//!
+//! Expansion is the whole cost — `codec::encode` alone is ~520 ns/child at
+//! working-set size — and it is a pure fan-out: reading the frontier and
+//! generating children never inspects shared mutable state. Threads claim whole
+//! frontier buckets from one atomic cursor, so every frontier key is expanded
+//! exactly once, and each child lands in exactly one thread's buffer for
+//! exactly one bucket. Run files carry the writing thread's id, so no two
+//! threads ever touch the same file.
+//!
+//! Consolidation then merges *all* run files for a bucket regardless of which
+//! thread wrote them, and dedupes. The merged key set is therefore a function
+//! of the frontier alone — thread count and scheduling change only how the
+//! intermediate run files are cut up. `visited` and `frontier` come out
+//! byte-identical to a serial run, which `tests/parallel_identity.rs` asserts
+//! directly rather than taking on faith. Consolidation itself stays serial: it
+//! is ~2% of the ply, and keeping it serial keeps the count exact by
+//! construction.
 //!
 //! # On-disk format
 //!
 //! Every key file is a **varint-delta stream**: keys ascending, each stored as
 //! a LEB128 gap from its predecessor (the first is absolute). Measured at
-//! 1.004 B/key on the dense top-class set against 6.0 for raw; the global set
-//! is sparser but still far under the 8 B/key that capped the raw run near
-//! ply 16. No pass materialises a bucket — reads, merges and writes are all
-//! streaming, so RAM does not grow with bucket size.
+//! 1.283 B/key on the real ply-14 set — 6.2x smaller than the raw 8 B/key that
+//! capped the earlier run near ply 16. No pass materialises a bucket — reads,
+//! merges and writes are all streaming, so RAM does not grow with bucket size.
 //!
 //! # Restartability
 //!
@@ -42,16 +62,141 @@ use solver::{codec, movegen};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 const BUCKETS: usize = 256;
-/// Keys buffered in RAM before a sort+dedupe+spill, in units of 2^20 keys
-/// (8 B each). Larger buffers dedupe a bigger slice of the child stream and
-/// emit denser — hence cheaper — run files. Override with `ENUM_BUF_MK`.
-const DEFAULT_BUF_MK: usize = 192;
+/// Keys buffered in RAM **across all threads** before each spills, in units of
+/// 2^20 keys (8 B each). Larger buffers dedupe a bigger slice of the child
+/// stream and emit denser run files. Override with `ENUM_BUF_MK`.
+const DEFAULT_BUF_MK: usize = 256;
 
 fn bucket_of(key: u64, shift: u32) -> usize {
     ((key >> shift) as usize).min(BUCKETS - 1)
+}
+
+fn vpath(dir: &Path, b: usize) -> PathBuf {
+    dir.join(format!("visited_{b:03}.keys"))
+}
+fn vtmp(dir: &Path, b: usize) -> PathBuf {
+    dir.join(format!("visited_{b:03}.tmp"))
+}
+fn fpath(dir: &Path, b: usize) -> PathBuf {
+    dir.join(format!("frontier_{b:03}.keys"))
+}
+fn fnext(dir: &Path, b: usize) -> PathBuf {
+    dir.join(format!("frontier_{b:03}.next"))
+}
+/// Run files are namespaced by writing thread, so concurrent spills of the same
+/// bucket cannot collide.
+fn rpath(dir: &Path, b: usize, tid: usize, seq: usize) -> PathBuf {
+    dir.join(format!("run_{b:03}_t{tid:02}_{seq:04}.keys"))
+}
+
+/// Every run file present, grouped by bucket. Read from the directory rather
+/// than from in-memory counters so that consolidation resuming after a crash
+/// sees exactly what expansion left behind.
+fn run_files_by_bucket(dir: &Path) -> io::Result<Vec<Vec<PathBuf>>> {
+    let mut out: Vec<Vec<PathBuf>> = vec![Vec::new(); BUCKETS];
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let rest = match name.strip_prefix("run_") {
+            Some(r) if name.ends_with(".keys") => r,
+            _ => continue,
+        };
+        if let Ok(b) = rest[..rest.len().min(3)].parse::<usize>() {
+            if b < BUCKETS {
+                out[b].push(entry.path());
+            }
+        }
+    }
+    for v in out.iter_mut() {
+        v.sort();
+    }
+    Ok(out)
+}
+
+/// Sorts, dedupes and writes out every non-empty per-bucket buffer this thread
+/// holds. Capacity is retained so the next fill does not re-grow the vectors.
+fn spill(
+    dir: &Path,
+    tid: usize,
+    bufs: &mut [Vec<u64>],
+    seq: &mut [usize],
+    nanos: &AtomicU64,
+) -> io::Result<()> {
+    let t = Instant::now();
+    for b in 0..BUCKETS {
+        if bufs[b].is_empty() {
+            continue;
+        }
+        bufs[b].sort_unstable();
+        bufs[b].dedup();
+        let mut w = KeyWriter::create(&rpath(dir, b, tid, seq[b]))?;
+        for k in bufs[b].iter() {
+            w.push(*k)?;
+        }
+        w.finish()?;
+        seq[b] += 1;
+        bufs[b].clear();
+    }
+    nanos.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Expands every frontier bucket into run files, using `nthreads` workers that
+/// claim buckets from a shared cursor. Consolidation discovers the resulting
+/// run files from disk; the return value is only the summed spill time.
+fn expand(dir: &Path, shift: u32, nthreads: usize, buf_keys: usize) -> io::Result<u64> {
+    let cursor = AtomicUsize::new(0);
+    let spill_nanos = AtomicU64::new(0);
+    let per_thread = (buf_keys / nthreads).max(1 << 16);
+    std::thread::scope(|s| -> io::Result<()> {
+        let mut handles = Vec::with_capacity(nthreads);
+        for tid in 0..nthreads {
+            let cursor = &cursor;
+            let spill_nanos = &spill_nanos;
+            handles.push(s.spawn(move || -> io::Result<()> {
+                let mut bufs: Vec<Vec<u64>> = vec![Vec::new(); BUCKETS];
+                let mut seq: Vec<usize> = vec![0; BUCKETS];
+                let mut buffered = 0usize;
+                loop {
+                    // one atomic claim per bucket => each is expanded exactly once
+                    let b = cursor.fetch_add(1, Ordering::Relaxed);
+                    if b >= BUCKETS {
+                        break;
+                    }
+                    let mut fr = match KeyReader::open(&fpath(dir, b))? {
+                        Some(r) => r,
+                        None => continue,
+                    };
+                    while let Some(key) = fr.cur {
+                        let pos = codec::decode(key);
+                        for m in movegen::legal_moves(&pos).iter() {
+                            let mut q = pos;
+                            q.make(*m);
+                            let ck = codec::encode(&q);
+                            bufs[bucket_of(ck, shift)].push(ck);
+                            buffered += 1;
+                        }
+                        if buffered >= per_thread {
+                            spill(dir, tid, &mut bufs, &mut seq, spill_nanos)?;
+                            buffered = 0;
+                        }
+                        fr.advance()?;
+                    }
+                }
+                spill(dir, tid, &mut bufs, &mut seq, spill_nanos)
+            }));
+        }
+        for h in handles {
+            h.join().expect("expansion thread panicked")?;
+        }
+        Ok(())
+    })?;
+    Ok(spill_nanos.load(Ordering::Relaxed))
 }
 
 /// Streams `visited` against the merged candidates, writing the union to
@@ -113,14 +258,28 @@ fn main() -> io::Result<()> {
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(DEFAULT_BUF_MK)
         << 20;
+    let nthreads: usize = std::env::var("ENUM_THREADS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or_else(|| {
+            // Expansion is bound by memory traffic through the codec tables,
+            // not by ALU work, so the second thread on an SMT core buys almost
+            // nothing. Measured at ply 12: expand took 37.6 s on 10 threads,
+            // 37.8 s on 14 and 39.0 s on 20 -- flat past the physical core
+            // count, and slightly worse once every core is doubled up. Half of
+            // `available_parallelism` lands on that knee and leaves the machine
+            // usable. Override with `ENUM_THREADS`.
+            let logical = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2);
+            (logical / 2).max(1)
+        })
+        .min(BUCKETS);
     fs::create_dir_all(&dir)?;
 
     let shift = (64 - codec::key_space().leading_zeros()).saturating_sub(8);
-    let vpath = |b: usize| dir.join(format!("visited_{b:03}.keys"));
-    let vtmp = |b: usize| dir.join(format!("visited_{b:03}.tmp"));
-    let fpath = |b: usize| dir.join(format!("frontier_{b:03}.keys"));
-    let fnext = |b: usize| dir.join(format!("frontier_{b:03}.next"));
-    let rpath = |b: usize, r: usize| dir.join(format!("run_{b:03}_{r:04}.keys"));
+    let dir = dir.as_path();
     let ply_txt = dir.join("ply.txt");
     let cum_txt = dir.join("cum.txt");
     let consol_txt = dir.join("consol.txt");
@@ -132,11 +291,11 @@ fn main() -> io::Result<()> {
     // `.next` produced no fresh keys, so its frontier is dropped.
     let do_swap = || -> io::Result<()> {
         for b in 0..BUCKETS {
-            if fnext(b).exists() {
-                let _ = fs::remove_file(fpath(b));
-                fs::rename(fnext(b), fpath(b))?;
+            if fnext(dir, b).exists() {
+                let _ = fs::remove_file(fpath(dir, b));
+                fs::rename(fnext(dir, b), fpath(dir, b))?;
             } else {
-                let _ = fs::remove_file(fpath(b));
+                let _ = fs::remove_file(fpath(dir, b));
             }
         }
         Ok(())
@@ -177,114 +336,61 @@ fn main() -> io::Result<()> {
 
     if start_ply == 0 && resume_bucket == 0 {
         let root = codec::encode(&solver::startpos());
-        write_one(&vpath(bucket_of(root, shift)), root)?;
-        write_one(&fpath(bucket_of(root, shift)), root)?;
+        write_one(&vpath(dir, bucket_of(root, shift)), root)?;
+        write_one(&fpath(dir, bucket_of(root, shift)), root)?;
         cumulative = 1;
         fs::write(&cum_txt, "1")?;
         println!("{:>4} {:>16} {:>18} {:>10}", "ply", "new", "cumulative", "sec");
         println!("{:>4} {:>16} {:>18} {:>10.1}", 0, 1, 1, 0.0);
     } else {
-        println!(
-            "resuming after ply {start_ply}, cumulative {cumulative}, buffer {} Mkeys",
-            buf_keys >> 20
-        );
+        println!("resuming after ply {start_ply}, cumulative {cumulative}");
     }
+    println!(
+        "threads {nthreads}, buffer {} Mkeys total ({} Mkeys/thread)",
+        buf_keys >> 20,
+        (buf_keys / nthreads) >> 20
+    );
 
     let t0 = Instant::now();
     for ply in (start_ply + 1)..=max_ply {
-        let mut runs: Vec<usize> = vec![0; BUCKETS];
         let tp = Instant::now();
-        let (mut t_gen, mut t_spill) = (0.0f64, 0.0f64);
 
         // ---- 1. expand -------------------------------------------------
-        // Skipped when resuming mid-consolidation: the run files are on disk,
-        // so the surviving ones are counted rather than regenerated.
-        if resume_bucket > 0 {
-            for b in 0..BUCKETS {
-                let mut r = 0;
-                while rpath(b, r).exists() {
-                    r += 1;
-                }
-                runs[b] = r;
-            }
-        } else {
-            let mut bufs: Vec<Vec<u64>> = vec![Vec::new(); BUCKETS];
-            let mut buffered = 0usize;
-            let spill_secs = std::cell::Cell::new(0.0f64);
-            let spill = |bufs: &mut Vec<Vec<u64>>, runs: &mut Vec<usize>| -> io::Result<()> {
-                for b in 0..BUCKETS {
-                    if bufs[b].is_empty() {
-                        continue;
-                    }
-                    let ts = Instant::now();
-                    bufs[b].sort_unstable();
-                    bufs[b].dedup();
-                    let mut w = KeyWriter::create(&rpath(b, runs[b]))?;
-                    for k in bufs[b].iter() {
-                        w.push(*k)?;
-                    }
-                    w.finish()?;
-                    runs[b] += 1;
-                    bufs[b].clear();
-                    spill_secs.set(spill_secs.get() + ts.elapsed().as_secs_f64());
-                }
-                Ok(())
-            };
-
-            for b in 0..BUCKETS {
-                let mut fr = match KeyReader::open(&fpath(b))? {
-                    Some(r) => r,
-                    None => continue,
-                };
-                while let Some(key) = fr.cur {
-                    let pos = codec::decode(key);
-                    for m in movegen::legal_moves(&pos).iter() {
-                        let mut q = pos;
-                        q.make(*m);
-                        let ck = codec::encode(&q);
-                        bufs[bucket_of(ck, shift)].push(ck);
-                        buffered += 1;
-                    }
-                    if buffered >= buf_keys {
-                        spill(&mut bufs, &mut runs)?;
-                        buffered = 0;
-                    }
-                    fr.advance()?;
-                }
-            }
-            spill(&mut bufs, &mut runs)?;
-            t_spill = spill_secs.get();
-            t_gen = tp.elapsed().as_secs_f64() - t_spill;
+        // Skipped when resuming mid-consolidation: the run files are on disk.
+        let mut spill_cpu = 0.0f64;
+        if resume_bucket == 0 {
+            spill_cpu = expand(dir, shift, nthreads, buf_keys)? as f64 / 1e9;
         }
         let t_expand = tp.elapsed().as_secs_f64();
 
         // ---- 2. consolidate, one bucket at a time -----------------------
         // The next frontier is written beside the current one; the swap happens
         // only once every bucket is done, so an interrupted ply is resumable.
+        let runs = run_files_by_bucket(dir)?;
         let mut new_total: u64 = resume_new;
         for b in resume_bucket..BUCKETS {
-            if runs[b] > 0 {
-                let mut readers = Vec::with_capacity(runs[b]);
-                for r in 0..runs[b] {
-                    if let Some(rd) = KeyReader::open(&rpath(b, r))? {
+            if !runs[b].is_empty() {
+                let mut readers = Vec::with_capacity(runs[b].len());
+                for p in &runs[b] {
+                    if let Some(rd) = KeyReader::open(p)? {
                         readers.push(rd);
                     }
                 }
-                let vis = KeyReader::open(&vpath(b))?;
-                let fresh = merge_new(vis, KwayMerge::new(readers), &vtmp(b), &fnext(b))?;
-                fs::rename(vtmp(b), vpath(b))?;
+                let vis = KeyReader::open(&vpath(dir, b))?;
+                let fresh =
+                    merge_new(vis, KwayMerge::new(readers), &vtmp(dir, b), &fnext(dir, b))?;
+                fs::rename(vtmp(dir, b), vpath(dir, b))?;
                 if fresh == 0 {
-                    let _ = fs::remove_file(fnext(b));
+                    let _ = fs::remove_file(fnext(dir, b));
                 }
                 new_total += fresh;
-                for r in 0..runs[b] {
-                    let _ = fs::remove_file(rpath(b, r));
+                for p in &runs[b] {
+                    let _ = fs::remove_file(p);
                 }
             }
             // Recording progress after every bucket is what makes replay cheap.
             fs::write(&consol_txt, format!("{ply} {} {new_total}", b + 1))?;
         }
-
         let t_consol = tp.elapsed().as_secs_f64() - t_expand;
 
         // ---- 3. commit --------------------------------------------------
@@ -301,7 +407,7 @@ fn main() -> io::Result<()> {
         resume_new = 0;
 
         println!(
-            "{:>4} {:>16} {:>18} {:>10.1}   [gen {t_gen:.1} spill {t_spill:.1} consol {t_consol:.1}]",
+            "{:>4} {:>16} {:>18} {:>10.1}   [expand {t_expand:.1} (spill-cpu {spill_cpu:.1}) consol {t_consol:.1}]",
             ply,
             new_total,
             cumulative,
