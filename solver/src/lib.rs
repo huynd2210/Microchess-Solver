@@ -12,6 +12,7 @@
 //!   the rook moves, or the rook's home square is captured on.
 
 pub mod codec;
+pub mod keystream;
 pub mod matclass;
 pub mod movegen;
 pub mod tt;

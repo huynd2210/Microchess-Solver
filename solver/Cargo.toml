@@ -7,3 +7,8 @@ edition = "2021"
 
 [profile.release]
 opt-level = 3
+# `enumerate` is a bin calling hot stream methods in the lib crate; without
+# LTO those calls cross a crate boundary and cannot inline. (Measured: no
+# effect on the codec, which dominates -- kept for the streaming code.)
+lto = true
+codegen-units = 1
