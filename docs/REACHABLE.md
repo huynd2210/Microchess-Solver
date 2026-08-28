@@ -129,3 +129,34 @@ Two caveats that eat the headroom:
 2. **Delta encoding is sequential-access only.** That suits sort/merge exactly, but
    it forecloses random probing — the design cannot fall back on a hash for
    convenience anywhere in the hot path.
+
+---
+
+# Global enumeration — plies 13 and 14 now measured
+
+`solver/src/bin/enumerate.rs` (external-memory BFS, validated against every known
+ply count and a resume cycle before launch) extended the global curve past ply 12
+for the first time. Log: `enumeration-run.log`.
+
+| ply | new | cumulative | ratio |
+|---:|---:|---:|---:|
+| 12 | 76,344,133 | 118,717,620 | 2.656 |
+| **13** | **177,411,843** | **296,129,463** | **2.324** |
+| **14** | **378,216,358** | **674,345,821** | **2.132** |
+
+**The global curve decays more slowly than the no-capture region at every
+comparable ply** (r13 2.32 vs 1.98, r14 2.13 vs 1.89). That was the reasoning
+behind treating 9.4e9 as a floor rather than an estimate, and it is now confirmed
+by measurement rather than argued.
+
+Re-projecting from plies 11-14:
+
+| decline assumption | peak | total reachable |
+|---|---:|---:|
+| faster (-40%) | ply 18 | 4.5e9 |
+| **measured** | **ply 19** | **8.4e9** |
+| slower (+40%) | ply 22 | 3.4e10 |
+
+Still a 7x spread. Only finishing the enumeration closes it, and that needs the
+key compression described in `HANDOVER.md` — the run stalls near ply 16-17 with
+keys stored raw at 8 bytes.

@@ -279,6 +279,8 @@ static bool ROOT_WHITE;
 static vector<u64> PATH;               // for repetition detection on the path
 static u64 g_root_pn = 1, g_root_dn = 1;
 
+static u64 BUDGET = UINT64_MAX;
+
 static inline void ttProbe(u64 k, uint32_t& pn, uint32_t& dn){
     TTE& e = TT[k & TTMASK];
     if(e.key == k){ pn = e.pn; dn = e.dn; } else { pn = 1; dn = 1; }
@@ -321,7 +323,7 @@ static void mid(Pos& P, uint32_t thpn, uint32_t thdn){
     vector<Move> lm = legalMoves(P);
     uint32_t pn, dn;
     if(terminal(P, lm, pn, dn)){ ttStore(k, pn, dn); return; }
-    if(onPath(k)){ ttStore(k, PINF, 0); return; }      // repetition = draw = not a win
+    if(onPath(k)){ return; }      // repetition on path = draw
     bool orNode = ((P.wtm!=0) == ROOT_WHITE);
     PATH.push_back(k);
     while(true){
@@ -329,7 +331,12 @@ static void mid(Pos& P, uint32_t thpn, uint32_t thdn){
         uint64_t sum=0; uint32_t best=PINF, best2=PINF; size_t bi=0;
         for(size_t i=0;i<lm.size();i++){
             Pos Q; legalAfter(P, lm[i], Q);
-            uint32_t cp, cd; ttProbe(key(Q), cp, cd);
+            uint32_t cp, cd;
+            if(onPath(key(Q))){
+                cp = PINF; cd = 0;
+            } else {
+                ttProbe(key(Q), cp, cd);
+            }
             uint32_t mine = orNode ? cp : cd;
             uint32_t other= orNode ? cd : cp;
             sum += other;
@@ -341,7 +348,7 @@ static void mid(Pos& P, uint32_t thpn, uint32_t thdn){
         pn = orNode ? node_min : node_sum;
         dn = orNode ? node_sum : node_min;
         if(P.wtm == (ROOT_WHITE?1:0) && PATH.size()==1){ g_root_pn = pn; g_root_dn = dn; }
-        if(pn >= thpn || dn >= thdn){ ttStore(k, pn, dn); break; }
+        if(pn >= thpn || dn >= thdn || NODES >= BUDGET){ ttStore(k, pn, dn); break; }
         // descend into the most-proving child
         Pos Q; legalAfter(P, lm[bi], Q);
         uint32_t cthpn, cthdn;
@@ -373,7 +380,8 @@ int main(int argc, char** argv){
         // argv[3] = TT bits, argv[4] = node budget (millions)
         ROOT_WHITE = (argc>2 && string(argv[2])=="black") ? false : true;
         int ttbits = argc>3 ? atoi(argv[3]) : 24;
-        u64 budget = (argc>4 ? (u64)atoll(argv[4]) : 200ULL) * 1000000ULL;
+        BUDGET = (argc>4 ? (u64)atoll(argv[4]) : 200ULL) * 1000000ULL;
+        u64 budget = BUDGET;
         TT.assign((size_t)1<<ttbits, TTE{0,1,1}); TTMASK = ((size_t)1<<ttbits) - 1;
         printf("claim: %s can force a WIN from the start position\n", ROOT_WHITE?"WHITE":"BLACK");
         printf("TT 2^%d entries, budget %llu nodes\n", ttbits, (unsigned long long)budget);

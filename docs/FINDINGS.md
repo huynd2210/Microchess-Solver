@@ -10,6 +10,9 @@ why the next step is an external-memory solver.
 This document supersedes the conclusions in `FEASIBILITY.md` and `READINESS.md`;
 their *measurements* remain valid, their verdicts do not.
 
+**For the operational picture — what is running, what to do next — see
+`HANDOVER.md`.**
+
 ---
 
 ## 1. What is verified and can be relied on

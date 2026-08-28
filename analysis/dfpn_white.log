@@ -1,0 +1,54 @@
+﻿claim: WHITE can force a WIN from the start position
+TT 2^24 entries, budget 50000000 nodes
+  nodes      1000000   root pn       1270   dn       3767
+  nodes      2000000   root pn       1905   dn       4989
+  nodes      3000000   root pn       2417   dn       6032
+  nodes      4000000   root pn       2910   dn       6740
+  nodes      5000000   root pn       3376   dn       7067
+  nodes      6000000   root pn       3948   dn       6749
+  nodes      7000000   root pn       4723   dn       6394
+  nodes      8000000   root pn       5927   dn       4833
+  nodes      9000000   root pn       8233   dn       2789
+  nodes     10000000   root pn      20376   dn       2069
+  nodes     11000000   root pn      32996   dn       2069
+  nodes     12000000   root pn      45640   dn       2069
+  nodes     13000000   root pn      58285   dn       2069
+  nodes     14000000   root pn      70933   dn       2069
+  nodes     15000000   root pn      83581   dn       2069
+  nodes     16000000   root pn      96213   dn       2069
+  nodes     17000000   root pn     108860   dn       2069
+  nodes     18000000   root pn     121514   dn       2069
+  nodes     19000000   root pn     134165   dn       2069
+  nodes     20000000   root pn     146816   dn       2069
+  nodes     21000000   root pn     159468   dn       2069
+  nodes     22000000   root pn     172102   dn       2069
+  nodes     23000000   root pn     184754   dn       2069
+  nodes     24000000   root pn     197413   dn       2069
+  nodes     25000000   root pn     210059   dn       2069
+  nodes     26000000   root pn     222711   dn       2069
+  nodes     27000000   root pn     235372   dn       2069
+  nodes     28000000   root pn     248014   dn       2069
+  nodes     29000000   root pn     260674   dn       2069
+  nodes     30000000   root pn     273322   dn       2069
+  nodes     31000000   root pn     285976   dn       2069
+  nodes     32000000   root pn     298618   dn       2069
+  nodes     33000000   root pn     311271   dn       2069
+  nodes     34000000   root pn     323928   dn       2069
+  nodes     35000000   root pn     336568   dn       2069
+  nodes     36000000   root pn     349213   dn       2069
+  nodes     37000000   root pn     361856   dn       2069
+  nodes     38000000   root pn     374504   dn       2069
+  nodes     39000000   root pn     387154   dn       2069
+  nodes     40000000   root pn     399800   dn       2069
+  nodes     41000000   root pn     412447   dn       2069
+  nodes     42000000   root pn     425091   dn       2069
+  nodes     43000000   root pn     437740   dn       2069
+  nodes     44000000   root pn     450406   dn       2069
+  nodes     45000000   root pn     463056   dn       2069
+  nodes     46000000   root pn     475704   dn       2069
+  nodes     47000000   root pn     488353   dn       2069
+  nodes     48000000   root pn     500994   dn       2069
+  nodes     49000000   root pn     513645   dn       2069
+  nodes     50000000   root pn     526291   dn       2069
+
+BUDGET EXHAUSTED at 50000000 nodes: root pn 526291 dn 2069 (neither reached 0)

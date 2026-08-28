@@ -3,7 +3,8 @@
 A 4x5 chess variant, and an attempt to solve it — to compute the game-theoretic
 value of the start position.
 
-**Start here: [docs/FINDINGS.md](docs/FINDINGS.md)** — the current state of
+**Start here: [docs/HANDOVER.md](docs/HANDOVER.md)** for the current situation and next
+steps, then [docs/FINDINGS.md](docs/FINDINGS.md) — the current state of
 knowledge, what is verified, what is ruled out, and what it would cost.
 
 ## Short version
