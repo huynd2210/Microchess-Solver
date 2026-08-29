@@ -357,6 +357,32 @@ fn main() -> io::Result<()> {
         }
     }
 
+    // Stale scratch from an expansion that was killed before consolidation
+    // began. It must go — a run file truncated mid-write decodes to garbage —
+    // but only when no consolidation is in flight, because then these very
+    // files are what the resume above depends on. Doing it here rather than by
+    // hand is the point: deleting them manually during a live consolidation
+    // destroys the ply-17 frontier and mixes `visited` across two plies, which
+    // is unrepairable and cost a full rebuild once already.
+    if resume_bucket == 0 {
+        let mut swept = 0usize;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if (name.starts_with("run_") && name.ends_with(".keys"))
+                || name.ends_with(".tmp")
+                || name.ends_with(".next")
+            {
+                fs::remove_file(entry.path())?;
+                swept += 1;
+            }
+        }
+        if swept > 0 {
+            println!("swept {swept} stale scratch files from an interrupted expansion");
+        }
+    }
+
     if start_ply == 0 && resume_bucket == 0 {
         let root = codec::encode(&solver::startpos());
         write_one(&vpath(dir, bucket_of(root, shift)), root)?;
