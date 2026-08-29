@@ -6,25 +6,75 @@
 //! any position: it sends legal positions to legal positions and legal moves to
 //! legal moves, and it negates the game value.
 //!
-//! # What it does and does not buy
+//! # What it buys: exactly 2x, and why that is not obvious
 //!
 //! For the **retrograde solve** the saving is a clean 2x: `mirror` pairs a
-//! material class with its transpose, so settling one settles the other for
-//! free.
+//! material class with its transpose, so settling one settles the other.
 //!
-//! For the **enumeration** it is not obviously 2x, and the difference matters.
-//! `mirror` flips the side to move, and a position with White to move is only
-//! ever reached at an even ply while its mirror, with Black to move, is only
-//! ever reached at an odd one. `mirror(startpos)` — the opening array with Black
-//! to move — is not reachable at all, since pawns cannot retreat to restore it.
-//! So the reachable set is *not* closed under `mirror`, and collapsing it onto
-//! canonical representatives saves somewhere between nothing and half. The
-//! factor is an empirical question; `symcount` measures it on a real store.
+//! For the **enumeration** the same 2x holds, but it turns on a fact specific to
+//! this variant. `mirror` flips the side to move, so a White-to-move position
+//! reached at an even ply has its mirror reachable only at an odd one — the
+//! reachable set is closed under `mirror` only if `mirror(startpos)`, the
+//! opening array with Black to move, is itself reachable.
 //!
-//! Enumerating canonical forms is still *correct* whatever that factor is:
+//! In standard chess it is not, and the proof is familiar: with no pawn moves
+//! and castling rights intact, only knights can move, and a knight needs an even
+//! number of moves to return home, so the two sides' move counts are both even
+//! and can never differ by one. **That proof fails here.** Microchess's second
+//! rank is empty but for the d-pawn, so the bishop is free immediately, and the
+//! bishop has an *odd* closed walk: `b1-c2-d3-b1`. Hence `1. Bc2 Na4 2. Bd3 Nc5
+//! 3. Bb1` — five plies, Black to move, every piece home, both castling rights
+//! intact.
+//!
+//! So the reachable set *is* closed under `mirror`: P reachable by `m` implies
+//! `mirror(P)` reachable by (path to `mirror(start)`) then `mirror(m)`, which
+//! also bounds the detour — a position at ply d has its mirror by ply d+5. And
+//! since `mirror` flips the side to move, no position is its own mirror. The
+//! reachable set is therefore a disjoint union of mirror pairs and canonical
+//! enumeration saves **exactly 2x**. A store truncated at some ply will measure
+//! less than that, purely because the deepest positions' partners lie beyond the
+//! cut; `symcount` separates that artefact from the real rate.
+//!
+//! Enumerating canonical forms is sound for a separate reason:
 //! `mirror(children(p)) == children(mirror(p))` as sets, so expanding either
-//! representative of a canonical pair yields the same canonical children. That
-//! identity is asserted in the tests rather than assumed.
+//! representative of a canonical pair yields the same canonical children. All of
+//! this is asserted in the tests rather than assumed.
+//!
+//! # Why the *values* survive it
+//!
+//! Space saved on a wrong answer is worse than no saving, so the value argument
+//! is kept separate from the counting one.
+//!
+//! Under this project's conventions a position's value is a function of the
+//! position alone — the 50-move rule is ignored, which takes the halfmove clock
+//! out of the state, and repetition is resolved by fixed-point iteration inside
+//! a material class rather than by consulting the path (`docs/REPETITION.md`).
+//! That value is then determined by exactly two things: the move graph, and the
+//! labelling of terminal nodes.
+//!
+//! `mirror` preserves both. The graph, by `mirror_commutes_with_move_generation`.
+//! The terminals, by `mirror_preserves_check_and_therefore_terminal_values`:
+//! move counts are preserved, and so is `in_check`, so a mate mirrors to a mate
+//! and a stalemate to a stalemate — the one distinction between a loss and a
+//! draw at a leaf. Value iteration reads nothing else, so an isomorphism that
+//! preserves the initial labelling preserves every iterate and therefore the
+//! fixed point:
+//!
+//! ```text
+//! value(mirror(p)) == value(p)      from the mover's point of view
+//! ```
+//!
+//! Two hazards this does *not* remove, both for whoever wires canonicalisation
+//! into the solver:
+//!
+//! * The identity holds for **mover-relative** values (WIN/LOSS/DRAW for the
+//!   side to move). A table storing White-relative values must negate on
+//!   lookup, and getting that backwards inverts the answer with no other
+//!   symptom.
+//! * A canonical solve walks the class DAG, so it must also hold at class
+//!   granularity — `mirror` sends a class to its transpose, consistently for
+//!   every position in it, which is
+//!   `mirror_maps_a_class_onto_a_single_transposed_class`.
 
 use crate::{codec, Position, BOARD_LEN, CASTLE_B, CASTLE_W, EMPTY};
 
@@ -85,6 +135,34 @@ mod tests {
         v.sort_unstable();
         v.dedup();
         v
+    }
+
+    /// Least ply at which any of `targets` first appears, searching to `limit`.
+    fn first_ply_reaching(targets: &[u64], limit: u32) -> Option<u32> {
+        use std::collections::HashSet;
+        let want: HashSet<u64> = targets.iter().copied().collect();
+        let start = startpos();
+        let mut seen: HashSet<u64> = HashSet::new();
+        seen.insert(codec::encode(&start));
+        let mut frontier = vec![start];
+        for ply in 1..=limit {
+            let mut next = Vec::new();
+            for p in &frontier {
+                for m in movegen::legal_moves(p).iter() {
+                    let mut q = *p;
+                    q.make(*m);
+                    let k = codec::encode(&q);
+                    if seen.insert(k) {
+                        if want.contains(&k) {
+                            return Some(ply);
+                        }
+                        next.push(q);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        None
     }
 
     /// Walks the real game tree so the properties are checked on positions that
@@ -183,6 +261,78 @@ mod tests {
         }
     }
 
+    /// The opening array with Black to move **is** reachable, in five plies —
+    /// and this single fact is what makes the symmetry worth a full 2x.
+    ///
+    /// The standard-chess argument says it is unreachable: with no pawn moves
+    /// and castling rights intact, only knights can move, and a knight needs an
+    /// even number of moves to return home, so both sides' move counts are even
+    /// and can never differ by one. That argument does not survive here.
+    /// Microchess's second rank is empty but for the d-pawn, so the bishop is
+    /// free from move one — and the bishop has an *odd* closed walk:
+    /// `b1-c2-d3-b1`. Three White moves against two Black knight moves is five
+    /// plies, Black to move, every piece home, both castling rights intact.
+    ///
+    ///     1. Bc2 Na4  2. Bd3 Nc5  3. Bb1
+    #[test]
+    fn mirror_of_startpos_is_reachable_in_five_plies() {
+        let start = startpos();
+        let target = mirror_key(codec::encode(&start));
+        assert_eq!(
+            first_ply_reaching(&[target], 8),
+            Some(5),
+            "the opening array with Black to move should arise after 1.Bc2 Na4 2.Bd3 Nc5 3.Bb1"
+        );
+    }
+
+    /// Because `mirror(start)` is reachable, the reachable set is *closed* under
+    /// `mirror`: if P is reachable by move sequence `m`, then `mirror(P)` is
+    /// reachable by (path to mirror(start)) followed by `mirror(m)`. Since
+    /// `mirror` flips the side to move, no position is its own mirror, so the
+    /// set is a disjoint union of mirror pairs and canonicalising saves exactly
+    /// 2x — not "about 2x".
+    ///
+    /// The construction also bounds the detour: a position at ply d has its
+    /// mirror by ply d+5. This checks that for every position up to ply 4.
+    #[test]
+    fn reachable_set_is_closed_under_mirror() {
+        use std::collections::HashSet;
+        const SHALLOW: u32 = 4;
+        const DEEP: u32 = SHALLOW + 5;
+
+        let mut seen: HashSet<u64> = HashSet::new();
+        let start = startpos();
+        seen.insert(codec::encode(&start));
+        let mut frontier = vec![start];
+        let mut shallow: Vec<u64> = vec![codec::encode(&start)];
+        for ply in 1..=DEEP {
+            let mut next = Vec::new();
+            for p in &frontier {
+                for m in movegen::legal_moves(p).iter() {
+                    let mut q = *p;
+                    q.make(*m);
+                    let k = codec::encode(&q);
+                    if seen.insert(k) {
+                        if ply <= SHALLOW {
+                            shallow.push(k);
+                        }
+                        next.push(q);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        let missing = shallow
+            .iter()
+            .filter(|k| !seen.contains(&mirror_key(**k)))
+            .count();
+        assert_eq!(
+            missing, 0,
+            "{missing} of {} positions within ply {SHALLOW} lack a mirror by ply {DEEP}",
+            shallow.len()
+        );
+    }
+
     /// Legality is preserved in both directions, so the map never invents or
     /// destroys positions.
     #[test]
@@ -193,5 +343,79 @@ mod tests {
                 movegen::legal_moves(&mirror(&p)).len()
             );
         }
+    }
+
+    /// The fact the *solve* rests on, as opposed to the enumeration.
+    ///
+    /// A position's value is fixed by the graph plus the labelling of its
+    /// terminals. `mirror_commutes_with_move_generation` gives the graph
+    /// isomorphism; this gives the terminal labelling. Together they force
+    /// `value(mirror(p)) == value(p)` from the mover's point of view, because
+    /// value iteration reads nothing else — so an isomorphism that preserves
+    /// the initial labels preserves every iterate and hence the fixed point.
+    ///
+    /// Checkmate and stalemate are the same node count apart: both have no legal
+    /// moves, and only `in_check` separates a loss from a draw. If `mirror`
+    /// preserved move counts but flipped check, mates and stalemates would swap
+    /// and the solve would return confidently wrong values with no other symptom.
+    #[test]
+    fn mirror_preserves_check_and_therefore_terminal_values() {
+        for p in walk(6) {
+            let m = mirror(&p);
+            assert_eq!(
+                movegen::in_check(&p),
+                movegen::in_check(&m),
+                "mirror flipped the check status"
+            );
+            assert_eq!(
+                movegen::legal_moves(&p).is_empty(),
+                movegen::legal_moves(&m).is_empty()
+            );
+        }
+
+        // No mate or stalemate occurs within six plies of the start, so the
+        // loop above never actually exercises a terminal. These are the
+        // reference terminals from docs/SPEC.md, also used by tests/rules.rs.
+        let mate = Position::from_fen("1kR1/4/3N/2BP/K3 b - - 0 1").unwrap();
+        assert!(movegen::legal_moves(&mate).is_empty() && movegen::in_check(&mate));
+        let mm = mirror(&mate);
+        assert!(
+            movegen::legal_moves(&mm).is_empty() && movegen::in_check(&mm),
+            "a mate must mirror to a mate, never to a stalemate"
+        );
+
+        let stale = Position::from_fen("k3/3N/1K2/4/4 b - - 0 1").unwrap();
+        assert!(movegen::legal_moves(&stale).is_empty() && !movegen::in_check(&stale));
+        let sm = mirror(&stale);
+        assert!(
+            movegen::legal_moves(&sm).is_empty() && !movegen::in_check(&sm),
+            "a stalemate must mirror to a stalemate, never to a mate"
+        );
+    }
+
+    /// A canonical solve walks the material-class DAG bottom-up, so `mirror`
+    /// must land inside that DAG rather than somewhere outside it: it should
+    /// send a class to its transpose (White's material swapped with Black's),
+    /// and do so consistently for every position of that class.
+    #[test]
+    fn mirror_maps_a_class_onto_a_single_transposed_class() {
+        use std::collections::HashMap;
+        let mut seen: HashMap<usize, usize> = HashMap::new();
+        for p in walk(6) {
+            let k = codec::encode(&p);
+            let (a, b) = (codec::class_of_key(k), codec::class_of_key(mirror_key(k)));
+            match seen.get(&a) {
+                Some(prev) => assert_eq!(
+                    *prev, b,
+                    "class {a} mirrored to {b} here but {prev} earlier — not a class-level map"
+                ),
+                None => {
+                    seen.insert(a, b);
+                }
+            }
+            // and the map is an involution on classes too
+            assert_eq!(codec::class_of_key(mirror_key(mirror_key(k))), a);
+        }
+        assert!(seen.len() > 1, "sample covered only one material class");
     }
 }

@@ -1,12 +1,12 @@
 //! How much does colour symmetry actually save on the *reachable* set?
 //!
-//! The retrograde solve gets a clean 2x from `mirror`, because it works over
-//! whole material classes and `mirror` pairs a class with its transpose. The
-//! enumeration is a different question: `mirror` flips the side to move, and the
-//! reachable set is demonstrably not closed under it — `mirror(startpos)` is the
-//! opening array with Black to move, which no sequence of moves reaches. So the
-//! saving is whatever fraction of reachable positions have a *reachable* mirror,
-//! and that has to be measured.
+//! The answer is exactly 2x — the reachable set is closed under `mirror` (see
+//! `solver::symmetry`) and no position is its own mirror, so it is a disjoint
+//! union of mirror pairs. But a store truncated at ply N cannot show that: the
+//! newest ply's mirror partners have the opposite side to move and so lie one
+//! ply beyond the cut. This measures how much of the 2x is visible in a given
+//! store, which is the number that matters when sizing a run that has not
+//! finished.
 //!
 //! ```text
 //! saving = 1 / (1 - paired/2)     paired = fraction whose mirror is present
@@ -208,10 +208,10 @@ fn main() -> std::io::Result<()> {
     println!("  newest ply   ({n_fro:>13} keys) : {:>6.2}%   -> {:.3}x", 100.0 * rate_fro, saving(rate_fro));
     println!("  interior     ({n_int:>13} keys) : {:>6.2}%   -> {:.3}x", 100.0 * rate_int, saving(rate_int));
     println!("
-The newest ply is depressed by truncation, not by asymmetry: its");
-    println!("mirrors have the opposite side to move and so first appear at the next");
-    println!("ply, which is not enumerated yet. The interior rate is the one that");
-    println!("says what a completed enumeration would save.");
+The true rate is 100% (the reachable set is closed under mirror), so");
+    println!("every shortfall here is truncation: a position at ply d has its mirror");
+    println!("by ply d+5, and anything past the cut cannot be seen. The newest ply is");
+    println!("worst hit -- its partners are all beyond the edge.");
     println!("
 elapsed {:.1}s", t0.elapsed().as_secs_f64());
     Ok(())
