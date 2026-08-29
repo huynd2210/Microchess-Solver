@@ -69,7 +69,12 @@ const BUCKETS: usize = 256;
 /// Keys buffered in RAM **across all threads** before each spills, in units of
 /// 2^20 keys (8 B each). Larger buffers dedupe a bigger slice of the child
 /// stream and emit denser run files. Override with `ENUM_BUF_MK`.
-const DEFAULT_BUF_MK: usize = 256;
+///
+/// Peak resident is bounded by roughly `3 x` this (measured: 1.11 GB at the
+/// default, running ply 12). Ply-12 wall time is flat from 16 through 128 Mkeys,
+/// so this is a memory knob, not a speed one — what mattered for speed was
+/// bounding the retained capacity at all, which halved the ply.
+const DEFAULT_BUF_MK: usize = 128;
 
 fn bucket_of(key: u64, shift: u32) -> usize {
     ((key >> shift) as usize).min(BUCKETS - 1)
@@ -119,12 +124,20 @@ fn run_files_by_bucket(dir: &Path) -> io::Result<Vec<Vec<PathBuf>>> {
 }
 
 /// Sorts, dedupes and writes out every non-empty per-bucket buffer this thread
-/// holds. Capacity is retained so the next fill does not re-grow the vectors.
+/// holds.
+///
+/// Capacity is retained up to `cap_hint` so the next fill does not re-grow from
+/// nothing, but no further: buckets are skewed, and a buffer that simply kept
+/// whatever it peaked at would ratchet to its own high-water mark. Summed over
+/// `BUCKETS x threads` buffers that is the sum of the per-bucket peaks, not the
+/// peak of the sum — it exceeds the budget by the skew factor and climbs ply
+/// over ply. That is what exhausted RAM during ply 16.
 fn spill(
     dir: &Path,
     tid: usize,
     bufs: &mut [Vec<u64>],
     seq: &mut [usize],
+    cap_hint: usize,
     nanos: &AtomicU64,
 ) -> io::Result<()> {
     let t = Instant::now();
@@ -141,6 +154,9 @@ fn spill(
         w.finish()?;
         seq[b] += 1;
         bufs[b].clear();
+        if bufs[b].capacity() > cap_hint {
+            bufs[b].shrink_to(cap_hint);
+        }
     }
     nanos.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(())
@@ -153,13 +169,20 @@ fn expand(dir: &Path, shift: u32, nthreads: usize, buf_keys: usize) -> io::Resul
     let cursor = AtomicUsize::new(0);
     let spill_nanos = AtomicU64::new(0);
     let per_thread = (buf_keys / nthreads).max(1 << 16);
+    // Retained capacity per bucket. Twice the even share absorbs ordinary skew
+    // without letting any one bucket hoard; see `spill`. Worst-case resident is
+    // then bounded by roughly 3x `buf_keys` across all threads — live keys, plus
+    // the retained floor, plus one hot bucket mid-growth — instead of drifting
+    // upward with no bound at all.
+    let cap_hint = ((per_thread / BUCKETS) * 2).max(4096);
     std::thread::scope(|s| -> io::Result<()> {
         let mut handles = Vec::with_capacity(nthreads);
         for tid in 0..nthreads {
             let cursor = &cursor;
             let spill_nanos = &spill_nanos;
             handles.push(s.spawn(move || -> io::Result<()> {
-                let mut bufs: Vec<Vec<u64>> = vec![Vec::new(); BUCKETS];
+                let mut bufs: Vec<Vec<u64>> =
+                    (0..BUCKETS).map(|_| Vec::with_capacity(cap_hint)).collect();
                 let mut seq: Vec<usize> = vec![0; BUCKETS];
                 let mut buffered = 0usize;
                 loop {
@@ -182,13 +205,13 @@ fn expand(dir: &Path, shift: u32, nthreads: usize, buf_keys: usize) -> io::Resul
                             buffered += 1;
                         }
                         if buffered >= per_thread {
-                            spill(dir, tid, &mut bufs, &mut seq, spill_nanos)?;
+                            spill(dir, tid, &mut bufs, &mut seq, cap_hint, spill_nanos)?;
                             buffered = 0;
                         }
                         fr.advance()?;
                     }
                 }
-                spill(dir, tid, &mut bufs, &mut seq, spill_nanos)
+                spill(dir, tid, &mut bufs, &mut seq, cap_hint, spill_nanos)
             }));
         }
         for h in handles {
