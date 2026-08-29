@@ -6,7 +6,7 @@
 //!   1. movegen + make            (the floor: what any design must pay)
 //!   2. + exact codec key         (what a delta-encoded visited set needs)
 //!   3. bytes/sec implied by (2) at 6 bytes per child record
-use solver::{codec, movegen, startpos, Position};
+use solver::{codec, movegen, startpos};
 use std::time::Instant;
 
 /// Expand every position at `depth` plies from the start, counting children.

@@ -14,6 +14,7 @@
 pub mod codec;
 pub mod keystream;
 pub mod matclass;
+pub mod symmetry;
 pub mod movegen;
 pub mod tt;
 
