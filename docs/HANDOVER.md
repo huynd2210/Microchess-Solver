@@ -13,20 +13,24 @@ situation: what is running, what is built, and what to do next.
 The solver itself is not. The enumeration phase — the first half, and the phase
 that settles the last unmeasured quantity — is built, validated, and **running**.
 
-**The run.** Resumed from the ply-14 checkpoint with varint-compressed storage
-and parallel expansion.
+**The run.** Varint-compressed storage, parallel expansion, bounded buffers.
 
 ```
-store : <scratch>/enum_run          1.3 GB at ply 14 (was 8.4 GB raw)
+store : <scratch>/enum_run          ~7 GB at ply 16
 log   : <scratch>/enum_run.log      appended across runs, never truncated
 pid   : <scratch>/enum_run.pid      kill by this, never `pkill -f`
 resume: solver/target/release/enumerate.exe <store_dir> 64
-tune  : ENUM_THREADS (default = logical/2), ENUM_BUF_MK (default 256)
+tune  : ENUM_THREADS (default = logical/2), ENUM_BUF_MK (default 128)
 ```
 
 Resuming is always safe: the store is a checkpoint after every ply and is
-crash-safe *within* a ply too (see **Restartability** below). Nothing needs to be
-cleaned by hand before a restart.
+crash-safe *within* a ply too (see **Restartability** below). **Never clean a
+store by hand** — the enumerator sweeps stale scratch itself, and only when it is
+safe to. See the traps.
+
+**Blocked on disk.** At ply 16 the store is ~7 GB and the next ply needs several
+more; the revised projection wants 50–105 GB to finish. That decision has to be
+made before the run can continue.
 
 ### Plies measured so far
 
@@ -35,21 +39,47 @@ cleaned by hand before a restart.
 | 12 | 76,344,133 | 118,717,620 | 2.656 |
 | 13 | 177,411,843 | 296,129,463 | 2.324 |
 | 14 | 378,216,358 | 674,345,821 | 2.132 |
+| **15** | **731,249,316** | **1,405,595,137** | **1.933** |
+| **16** | **1,328,299,642** | **2,733,894,779** | **1.817** |
 
 The global curve decays **more slowly than the no-capture region** at every
 comparable ply (r13 2.32 vs 1.98, r14 2.13 vs 1.89). That was the prediction
 behind calling 9.4e9 a *floor* rather than an estimate, and it is confirmed by
 measurement.
 
-Projection from plies 11–14 — still the live uncertainty:
+### The projection has moved sharply upward — read this before planning anything
 
-| decline assumption | peak | total reachable |
+The ratio's *decline* is decelerating. Per-ply drop: −0.192, −0.199, then only
+**−0.117** from ply 15 to 16. A later peak compounds hard.
+
+| model fitted to plies 14–16 | peak | total reachable |
 |---|---:|---:|
-| faster (−40%) | ply 18 | 4.5e9 |
-| **measured** | **ply 19** | **8.4e9** |
-| slower (+40%) | ply 22 | 3.4e10 |
+| ratio falls −0.158/ply | ply ~21 | **3.4e10** |
+| ratio falls ×0.923/ply | ply ~23 | **8e10** |
 
-Only finishing the enumeration closes the 7× spread.
+**This document previously carried 8.4e9 as the central estimate. That is low by
+roughly 4–10×, and the old *upper* bound of 3.4e10 is now the optimistic case.**
+The old figure was extrapolated from ply 12; this one is fitted to five measured
+plies, three of which did not exist when the old number was written.
+
+Compression will not rescue it: density gain has nearly stalled (1.1982 B/key at
+ply 15, 1.1812 at ply 16), so bytes now scale almost linearly with keys.
+
+Consequences, which reach past the enumeration:
+
+| | 3.4e10 | 8e10 |
+|---|---:|---:|
+| peak disk (visited + frontier + runs) | ~50 GB | ~105 GB |
+| enumeration wall clock | ~8 h | ~24 h |
+| with colour symmetry (×2) | ~25 GB, 4 h | ~53 GB, 12 h |
+
+`FINDINGS.md` sizes the retrograde solve at 21–44 GB resident **on the 8.4e9
+figure**; that step scales with the same quantity and is therefore 4–10× larger
+than recorded. **Colour symmetry is no longer an optimisation, it is close to a
+precondition.**
+
+Only finishing the enumeration settles it — but the range to plan against is now
+3.4e10–8e10, not 4.5e9–3.4e10.
 
 ---
 
@@ -67,8 +97,11 @@ and RAM does not track bucket size.
 **Measured on the real ply-14 set: 1.283 B/key, 6.23× smaller.** The store went
 8.42 GB → 1.3 GB; free disk went 15 GB → 22 GB. This beats the 2.25 B/key that
 was projected from a uniform-gap model, because reachable keys cluster hard
-inside a material class — exactly what a gap encoding is paid to exploit. Density
-rises as the set fills, so B/key should keep falling toward ~1.0.
+inside a material class — exactly what a gap encoding is paid to exploit.
+
+Density improves as the set fills, but the gain has flattened: 1.283 B/key at ply
+14, 1.198 at 15, 1.181 at 16. Do not plan on it reaching 1.0 — from here bytes
+scale essentially linearly with keys.
 
 `recompress` converts a raw store in place. It reads each encoded bucket back and
 compares key-for-key **before** replacing the raw file, and records per-bucket
@@ -109,15 +142,33 @@ all buckets are done; `visited` is rewritten to a sibling and renamed over, neve
 truncated in place. Run files are discovered from the directory, so a resumed
 consolidation sees exactly what expansion left behind.
 
+### 4. Bounded spill buffers — ply 16 was exhausting RAM
+
+Retaining per-bucket buffer capacity across spills let each of the
+`BUCKETS × threads` buffers ratchet to its own high-water mark, so resident memory
+tracked the *sum of per-bucket peaks* rather than the peak of the sum. Bucket
+occupancy is skewed, so it overshot the budget and climbed ply over ply until
+ply 16 died on a failed 64 MB allocation.
+
+Buffers are now preallocated at an even share (×2 for skew) and shrunk back to it
+after each spill; peak resident is bounded at roughly `3 × ENUM_BUF_MK`, measured
+at **1.11 GB** against 3.5 GB and rising before. The ratchet cost speed too —
+ply 12 went **76.6 s → 34.5 s** once several GB of fragmented buffers stopped
+evicting the codec tables. Wall time is flat from 16 to 128 Mkeys, so the budget
+is a memory knob, not a speed one.
+
 ---
 
 ## Next, in order
 
-1. **Finish the enumeration.** Closes the 4.5e9–3.4e10 spread to a single number.
+1. **Colour symmetry (×2) — now first, ahead of finishing the run.** Always valid
+   (colour swap + vertical flip). Halves storage *and* work, and at the revised
+   projection it is the difference between fitting on this machine and not. The
+   left–right mirror is only valid once castling rights are gone — do not assume
+   ×4. It changes what a ply count *means*, so validate it against the ladder
+   below rather than assuming the counts should still match.
+2. **Finish the enumeration.** Closes the 3.4e10–8e10 spread to a single number.
    The last unmeasured input to every cost estimate in the project.
-2. **Colour symmetry (×2).** Always valid (colour swap + vertical flip). Halves
-   both storage and work. The left–right mirror is only valid once castling
-   rights are gone — do not assume ×4.
 3. **A cheaper key — now the highest-value optimisation by a wide margin.** See
    the corrected cost below.
 4. **Then the retrograde solve.** Design notes in `FINDINGS.md` §4. The decision
@@ -148,9 +199,10 @@ Consequences:
 
 * **Compute, not disk, is now the binding constraint.** Compression turned a hard
   disk ceiling into ~1.3 GB at ply 14; nothing suggests disk will bind again.
-* The enumeration is roughly **5–37 h of wall clock** across the projection
-  spread (~2 h at the 8.4e9 central estimate with expansion parallelised), rather
-  than the 2–4 h this document used to imply.
+* The enumeration is roughly **8–24 h of wall clock** across the revised
+  projection, rather than the 2–4 h this document used to imply. Measured rates
+  at ply 16, after the buffer fix: **0.568 µs per frontier key** to expand,
+  **0.039 µs per visited key** to consolidate.
 * **A cheaper key is worth more than anything else on the list.** It is ~85% of
   expansion cost. Incremental key update, or a per-class constrained rank like
   the one in `analysis/topclass.cpp`, is the obvious attack. Untouched.
@@ -177,12 +229,15 @@ visited encoding              1.283 B/key on the ply-14 set (674,345,821 keys)
 Reachable positions per ply, cumulative:
 
 ```
- 1: 10            6: 56,141        11: 42,373,487
+ 1: 10            6: 56,141        11: 42,373,487    16: 2,733,894,779
  2: 79            7: 246,709       12: 118,717,620
  3: 448           8: 1,021,173     13: 296,129,463
  4: 2,379         9: 3,898,949     14: 674,345,821
- 5: 11,872       10: 13,634,481
+ 5: 11,872       10: 13,634,481    15: 1,405,595,137
 ```
+
+Plies 15 and 16 are new. They were measured once, then reproduced by a
+from-scratch rebuild after the store was lost, so they are confirmed twice.
 
 `cargo test --release` covers all of it — 53 tests. The ones that matter most
 here: `perft_ladder`, `codec` injectivity, `keystream` (LEB128 byte-count
@@ -200,6 +255,12 @@ classes, cross-checked three ways). The largest class is exactly enumerated at
 
 ## Traps already paid for
 
+* **Never delete `run_*` / `.next` / `.tmp` from a store by hand.** They look
+  like scratch, but while a consolidation is in flight they *are* the recovery
+  state. Clearing them 183/256 buckets into ply 17 left `visited` mixed across
+  two plies with the new frontier unrecoverable, and cost a full rebuild. The
+  enumerator now sweeps them itself at startup, and only when no consolidation
+  is in progress. Check `consol.txt` before touching a store.
 * **`pkill -f` silently fails here.** It once left *twelve* driver processes
   appending to one results file. Kill by PID via WMI, and use a lock file.
 * **Heredocs into this shell mangle multi-line content.** A `cat > file <<'EOF'`
