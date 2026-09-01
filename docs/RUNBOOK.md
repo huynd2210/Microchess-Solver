@@ -167,9 +167,10 @@ must print `perft 9 = 176466898`.
 solver/target/release/codeck 10
 ```
 
-must print `injective ok 13634481 13634481` — distinct keys equal distinct
-positions — plus `roundtrip ok` and `maxkey 113777253897428 = 2^46.69`. Takes
-~31 s. `codeck 12` is the fuller check quoted in `README.md` and everywhere else
+prints a `roundtrip`/`injective` pair per ply, cumulative. What matters is that
+no line says `FAIL` and that the last pair reads `injective ok 13634481
+13634481` — distinct keys *equal* distinct positions — followed by
+`maxkey 113777253897428 = 2^46.69`. Takes ~31 s. `codeck 12` is the fuller check quoted in `README.md` and everywhere else
 in this repo (118,717,620 positions); it is minutes of runtime and a few GB of
 RAM, because it dedupes by **full position bytes** rather than by the codec key —
 that is the point, it has to be able to disagree with the codec.
