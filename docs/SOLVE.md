@@ -35,10 +35,19 @@ needs. Nothing in phase 2 can be sized until phase 1 finishes.
 
 `docs/RUNBOOK.md` §8 presents this as an open fork. It is closed by your disk
 budget. The unsymmetrised run needs 50–105 GB across the projected range; 150 GB
-covers the pessimistic end with headroom. Implementing canonicalisation would
-save half the disk you already have, at the cost of about a day of careful work
-and — worse — invalidating every validation baseline in the repo, which is your
-only defence against a silent wrong answer.
+covers the pessimistic end with headroom.
+
+Canonicalisation would not even buy what it appears to. The 2× is asymptotic —
+it arrives only when the run finishes. Measured against a plain BFS from the same
+root, a canonical one is still at **0.759 of the plain size at ply 11** (a 1.32×
+saving, not 2×), because folding mirror pairs moves positions to earlier plies
+rather than deleting them. Peak disk happens near the peak ply, not at the end.
+Compute is not the objection — done right it is ~14% *cheaper* — but the saving
+you would actually realise is far under 2×, against a cost of about a day of
+careful work and, worse, invalidating every validation baseline in the repo,
+which is your only defence against a silent wrong answer.
+
+The measurements are in `docs/RUNBOOK.md` §7.
 
 So: **do not implement canonicalisation.** Do not pass any symmetry flag. Run it
 plain. The colour symmetry stays available as a phase-2 lever if a class turns

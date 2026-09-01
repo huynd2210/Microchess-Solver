@@ -503,9 +503,78 @@ the store is the newest frontier, and its mirror partners live up to five plies
 deeper — past the cut, so unseeable. The interior rate (99.29%) is the one that
 extrapolates, and it is heading to 100% exactly as the argument requires.
 
-### The two hazards this does *not* remove
+### What canonicalisation actually costs — measured
 
-Whoever wires canonicalisation into a solver must handle both:
+The 2× is asymptotic. What a *running* enumeration gets is much less, and the
+compute price depends entirely on where you apply the map. Both measured on the
+real game tree.
+
+**Compute.** The enumerator already holds the child position `q` when it
+encodes, so canonicalising needs a second *encode*, not a decode. Over
+362,546,967 children expanded from a 42 M-position frontier:
+
+```
+plain   encode(q)                  678.9 ns/child   1.000x
+canon   encode + mirror + encode  1166.0 ns/child   1.718x
+naive   canon_key(encode(q))      1472.2 ns/child   2.169x
+
+net vs unsymmetrised, after halving the frontier:
+  good path    0.859x      <- 14% CHEAPER than not canonicalising
+  naive path   1.084x      <-  8% dearer
+```
+
+**So compute is not a cost — it is a small win, if done right.** The halved
+frontier more than pays for the second encode. But `symmetry::canon_key` takes a
+*key*, so it decodes a position the loop was holding two lines earlier; that
+26-point gap is the entire difference between the two rows. **`canon_key` is the
+wrong API for the hot loop** — it exists for `symcount` and one-off lookups.
+Write `min(encode(&q), encode(&mirror(&q)))` instead.
+
+**Storage, during the run.** Nowhere near 2×. A canonical BFS against a plain one
+from the same root:
+
+```
+ ply      plain new      canon new   canon/plain
+   3            369            342        0.9268
+   5           9493           8264        0.8705
+   7         190568         158501        0.8317
+   9        2877776        2294172        0.7972
+  11       28739006       21432697        0.7458
+
+cumulative at ply 11:  42,373,487 -> 32,156,772   =  0.7589   (a 1.32x saving)
+```
+
+**Per-ply counts do not halve, and neither does the cumulative total until the
+run finishes.** A canonical BFS reaches each mirror pair by the shorter of the
+two routes, which moves positions to earlier plies rather than deleting them.
+The ratio decays toward 0.5 but is still 0.75 at ply 11. Peak disk happens near
+the peak ply, not at exhaustion, so **the realised peak-disk saving is well under
+2×** — treat the "~25 GB with symmetry" figure in `HANDOVER.md` as optimistic.
+
+Two correctness properties came out of the same run, both clean: every plain
+key's representative was present in the canonical set (**0 missing** — canonical
+enumeration loses nothing), and every canonical key's pair was present in the
+plain set (**0 invented**).
+
+### Structural properties that survive canonicalisation
+
+Checked, because a phase-2 storage design leans on all three:
+
+* **`mirror` transposes the class id.** Class `widx*48 + bidx` maps to
+  `bidx*48 + widx`. Verified over 3,898,949 reachable positions, 0 mismatches.
+* **Class key-ranges stay contiguous.** `class_base` is monotonic in class id, so
+  for `widx < bidx` the whole of a class sits below its transpose and every
+  canonical key of the pair lands in the lower-id class — 0 violations over the
+  same set. Half the classes simply go empty (755 touched → 450, of which 20 are
+  self-transpose). **This is what keeps "the store is already sorted by class"
+  true**, which `docs/SOLVE.md` §3 depends on.
+* **The class DAG's topological order is unchanged.** `piece_count` and
+  `nonpawn_count` both sum over the two sides, so a class and its transpose have
+  identical sort keys and cannot reorder.
+
+### The hazards this does *not* remove
+
+Whoever wires canonicalisation into a solver must handle all three:
 
 1. **The value identity is mover-relative.** `value(mirror(p)) == value(p)` holds
    for WIN/LOSS/DRAW *from the side to move*. A table storing White-relative
@@ -516,6 +585,14 @@ Whoever wires canonicalisation into a solver must handle both:
    consistently for every position in it. Tested
    (`mirror_maps_a_class_onto_a_single_transposed_class`), but it is a property
    the solver has to actually *use* correctly.
+3. **Two canonicalisations do not compose.** If the left–right mirror is ever
+   added for castling-free positions, the orbit has four members and the
+   representative must be `min` over the **whole orbit**. Chaining
+   `canon_lr(canon_colour(k))` is neither idempotent nor well-defined. This is
+   the exact bug Tinyhouse shipped, and only its round-trip test caught it — for
+   the same reason, a position-level `canonical()` and the key-level
+   `canon_key()` must be proven to pick the same representative the moment both
+   exist.
 
 ### Why the values survive it at all
 
