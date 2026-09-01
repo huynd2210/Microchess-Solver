@@ -3,11 +3,14 @@
 A 4x5 chess variant, and an attempt to solve it — to compute the game-theoretic
 value of the start position.
 
-**Start here: [docs/RUNBOOK.md](docs/RUNBOOK.md)** — setup, how to run the
-enumeration, what to watch out for, and which figures elsewhere in this repo have
-gone stale. Then [docs/HANDOVER.md](docs/HANDOVER.md) for the strategic picture
-and [docs/FINDINGS.md](docs/FINDINGS.md) for the state of knowledge — what is
-verified, what is ruled out, and what it would cost.
+**Want to run it? [docs/SOLVE.md](docs/SOLVE.md)** — the work order: what to do,
+in order, with an acceptance test at every step. Then
+**[docs/RUNBOOK.md](docs/RUNBOOK.md)** — setup, how to run the enumeration, what
+to watch out for, and which figures elsewhere in this repo have gone stale.
+
+For background rather than instructions: [docs/FINDINGS.md](docs/FINDINGS.md) is
+the state of knowledge — what is verified, what is ruled out, what it would cost
+— and [docs/HANDOVER.md](docs/HANDOVER.md) is the strategic picture.
 
 ## Short version
 
@@ -31,7 +34,8 @@ and §12.
 
 | path | what |
 |---|---|
-| `docs/RUNBOOK.md` | **how to build, run and resume it** — read this first |
+| `docs/SOLVE.md` | **what to do** — the work order for actually solving it |
+| `docs/RUNBOOK.md` | **how to build, run and resume it** — the reference manual |
 | `docs/FINDINGS.md` | the state of knowledge |
 | `docs/SPEC.md` | the exact rules, each verified against the engine |
 | `docs/PERFT.md`, `docs/perft.txt` | the rules acceptance test (depth 9 = 176,466,898) |

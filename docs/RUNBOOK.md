@@ -5,6 +5,10 @@ manual: what the project is, what is already true, how to build and run it, and
 the specific ways it has gone wrong before. It is written to be read cold, by
 someone (or something) with no memory of the previous sessions.
 
+**If you just want to know what to do, read `docs/SOLVE.md` instead** — it is the
+work order, in order, with an acceptance test at every step. This file is the
+reference manual behind it.
+
 Read this first, then `docs/FINDINGS.md` for the state of knowledge, then
 `docs/HANDOVER.md` for the strategic picture. Where those two disagree with this
 file, **this file wins** — see [§12](#12-known-stale-figures-in-the-other-docs).
@@ -537,9 +541,13 @@ unstarted, and cheap piece of work.
 
 ---
 
-## 8. The open decision
+## 8. The disk decision
 
-The run is paused here, deliberately. It is a scope call, not a technical one.
+> **Already decided if you have ~120 GB or more free: take Option B, run
+> unsymmetrised, add no flags.** See `docs/SOLVE.md` §1. The rest of this section
+> is the reasoning, kept for whoever has less disk than that.
+
+It is a scope call, not a technical one.
 
 **Option A — wire canonicalisation into the enumerator first.**
 Store `canon_key(k)` instead of `k`; expand either representative of a pair
@@ -558,10 +566,12 @@ Needs 50–105 GB of free disk. Take the symmetry later, at the solve stage.
 Nothing new to build, nothing to re-validate, and the existing ladder stays
 meaningful the whole way.
 
-**The previous session's recommendation was A**, on the grounds that the
-symmetry has to be paid for eventually and it is cheaper to pay before the set
-doubles four more times. But B is entirely legitimate if disk is plentiful, and
-it is strictly lower risk.
+A was recommended when the machine had ~20 GB. With disk to spare, B wins on
+every axis that matters: nothing to build, nothing to re-validate, and the
+validation ladder above stays meaningful the whole way — which is the only
+defence against a silent wrong answer. The colour symmetry does not go to waste;
+it remains available at the solve stage, where `solver/src/symmetry.rs` is
+already built and tested for exactly that use.
 
 ---
 
@@ -703,8 +713,16 @@ failure mode this project keeps hitting.
 
 ## 13. After the enumeration: the retrograde solve
 
-Not built. Design constraints, so that whoever builds it does not rediscover them
-the hard way.
+**See `docs/SOLVE.md` — it is the work order for this half.** Short version: a
+verified retrograde solver already exists on the `bottom-up-tablebase` tag
+(`solver/src/retro.rs`, `bin/solve.rs`, `bin/pv.rs`, `bin/xcheck.rs`,
+`tests/solve_ground.rs`). Restored onto current `main` it builds with zero errors
+and its 17 ground-truth tests pass. It failed for **one** reason — its value
+array is dense over the class's whole index space, 5.4 TB for the start class —
+and the enumeration is what fixes that: only 1 slot in 7,327 is reachable.
+
+The design constraints below are what any replacement storage layer must still
+respect.
 
 **Sequential I/O, never random.** A disk-resident hash is fatal: ~3e10 positions
 × ~8.9 children is ~3e11 probes; at SSD random-read latency that is months. The
