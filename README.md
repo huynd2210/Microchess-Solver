@@ -3,9 +3,11 @@
 A 4x5 chess variant, and an attempt to solve it — to compute the game-theoretic
 value of the start position.
 
-**Start here: [docs/HANDOVER.md](docs/HANDOVER.md)** for the current situation and next
-steps, then [docs/FINDINGS.md](docs/FINDINGS.md) — the current state of
-knowledge, what is verified, what is ruled out, and what it would cost.
+**Start here: [docs/RUNBOOK.md](docs/RUNBOOK.md)** — setup, how to run the
+enumeration, what to watch out for, and which figures elsewhere in this repo have
+gone stale. Then [docs/HANDOVER.md](docs/HANDOVER.md) for the strategic picture
+and [docs/FINDINGS.md](docs/FINDINGS.md) for the state of knowledge — what is
+verified, what is ruled out, and what it would cost.
 
 ## Short version
 
@@ -20,11 +22,17 @@ positions. Extrapolating that measured curve puts the whole game at **at least
 9.4e9** positions: 4–12 hours of compute, but 21–44 GB of resident state, which
 does not fit this machine. Hence external memory.
 
+The external-memory enumeration is built and has reached **ply 16 =
+2,733,894,779** positions, which revises that 9.4e9 upward to **3.4e10–8e10** and
+scales the cost estimates with it. See [docs/RUNBOOK.md](docs/RUNBOOK.md) §5
+and §12.
+
 ## Layout
 
 | path | what |
 |---|---|
-| `docs/FINDINGS.md` | **the summary** — read this first |
+| `docs/RUNBOOK.md` | **how to build, run and resume it** — read this first |
+| `docs/FINDINGS.md` | the state of knowledge |
 | `docs/SPEC.md` | the exact rules, each verified against the engine |
 | `docs/PERFT.md`, `docs/perft.txt` | the rules acceptance test (depth 9 = 176,466,898) |
 | `docs/ENCODING.md` | the exact injective u64 key and why a hash will not do |
@@ -42,7 +50,7 @@ does not fit this machine. Hence external memory.
 ```bash
 cargo run --release --manifest-path solver/Cargo.toml --bin perft -- 9   # 176466898
 cargo run --release --manifest-path solver/Cargo.toml --bin codeck -- 12 # codec check
-cargo test --release --manifest-path solver/Cargo.toml                   # 46 tests
+cargo test --release --manifest-path solver/Cargo.toml                   # 64 tests
 python microchess.py best "k3/4/4/3P/KBNR w - - 0 1" --movetime 3000     # mate 5
 ```
 
